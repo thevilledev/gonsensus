@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/thevilledev/gonsensus.svg)](https://pkg.go.dev/github.com/thevilledev/gonsensus)
 [![Go Report Card](https://goreportcard.com/badge/github.com/thevilledev/gonsensus)](https://goreportcard.com/report/github.com/thevilledev/gonsensus)
 
-"Gonsensus" is a distributed consensus implementation, written in Go, using S3 conditional operations for leader election. It provides a simple, reliable way to coordinate distributed systems using *any* S3 compatible object storage as the backing store. Conditional writes are required.
+"Gonsensus" is a distributed consensus implementation, written in Go, using S3 conditional operations for leader election. It provides a simple, reliable way to coordinate distributed systems using *any* S3 compatible object storage as the backing store. Conditional writes are required. See [RFC 7232](https://datatracker.ietf.org/doc/html/rfc7232) for more details about conditional requests in general.
 
 See [example_test.go](example_test.go) for a fully fledged example use case.
 
