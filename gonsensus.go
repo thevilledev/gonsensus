@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -24,15 +25,17 @@ var (
 )
 
 const (
-	defaultTTL          = 30 * time.Second
-	defaultPollInterval = 5 * time.Second
+	defaultTTL           = 30 * time.Second
+	defaultPollInterval  = 5 * time.Second
+	retryIntervalDivider = 3 // always 1/3 of set TTL
 )
 
-// S3Client defines the interface for S3 operations
+// S3Client defines the interface for S3 operations.
 type S3Client interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
-	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput,
+		optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
 type Config struct {
@@ -62,12 +65,13 @@ type Manager struct {
 	onDemoted    func(context.Context)
 }
 
-// Helper function to check AWS error codes
+// Helper function to check AWS error codes.
 func isAWSErrorCode(err error, code string) bool {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.ErrorCode() == code
 	}
+
 	return false
 }
 
@@ -75,6 +79,7 @@ func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 	if client == nil {
 		return nil, fmt.Errorf("%w: S3 client is required", ErrInvalidConfig)
 	}
+
 	if bucket == "" {
 		return nil, fmt.Errorf("%w: bucket name is required", ErrInvalidConfig)
 	}
@@ -85,6 +90,7 @@ func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 		if err != nil {
 			hostname = "unknown"
 		}
+
 		nodeID = fmt.Sprintf("node-%s-%d", hostname, time.Now().UnixNano())
 	}
 
@@ -116,7 +122,7 @@ func (m *Manager) SetCallbacks(onElected func(context.Context) error, onDemoted 
 	m.onDemoted = onDemoted
 }
 
-// Check if lock is expired and try to acquire if it is
+// Check if lock is expired and try to acquire if it is.
 func (m *Manager) acquireLock(ctx context.Context) error {
 	now := time.Now()
 
@@ -165,6 +171,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 			// Another node is also trying to acquire the lock
 			return ErrLockExists
 		}
+
 		return fmt.Errorf("failed to create lock attempt: %w", err)
 	}
 
@@ -177,6 +184,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 			Bucket: aws.String(m.bucket),
 			Key:    aws.String(attemptKey),
 		})
+
 		return fmt.Errorf("failed to verify lock state: %w", err)
 	}
 
@@ -187,6 +195,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 			Bucket: aws.String(m.bucket),
 			Key:    aws.String(attemptKey),
 		})
+
 		return ErrLockExists
 	}
 
@@ -205,6 +214,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 			Bucket: aws.String(m.bucket),
 			Key:    aws.String(attemptKey),
 		})
+
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
 
@@ -217,7 +227,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 	return nil
 }
 
-// renewLock attempts to update the lock using atomic operations
+// renewLock attempts to update the lock using atomic operations.
 func (m *Manager) renewLock(ctx context.Context) error {
 	// First get current state
 	result, err := m.s3Client.GetObject(ctx, &s3.GetObjectInput{
@@ -229,6 +239,7 @@ func (m *Manager) renewLock(ctx context.Context) error {
 		if errors.As(err, &noSuchKey) {
 			return ErrLockNotFound
 		}
+
 		return fmt.Errorf("failed to get current lock: %w", err)
 	}
 	defer result.Body.Close()
@@ -290,6 +301,7 @@ func (m *Manager) renewLock(ctx context.Context) error {
 			Bucket: aws.String(m.bucket),
 			Key:    aws.String(updateKey),
 		})
+
 		return fmt.Errorf("failed to update main lock: %w", err)
 	}
 
@@ -311,6 +323,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			if isLeader && m.onDemoted != nil {
 				m.onDemoted(ctx)
 			}
+
 			return ctx.Err()
 
 		default:
@@ -318,38 +331,49 @@ func (m *Manager) Run(ctx context.Context) error {
 				err := m.acquireLock(ctx)
 				if err != nil {
 					if !errors.Is(err, ErrLockExists) {
-						fmt.Printf("Error acquiring lock: %v\n", err)
+						log.Printf("Error acquiring lock: %v\n", err)
 					}
+
 					time.Sleep(m.pollInterval)
+
 					continue
 				}
 
 				isLeader = true
+
 				if m.onElected != nil {
 					if err := m.onElected(ctx); err != nil {
-						fmt.Printf("Error in leader callback: %v\n", err)
+						log.Printf("Error in leader callback: %v\n", err)
+
 						isLeader = false
+
 						continue
 					}
 				}
 			}
 
 			// Leader maintenance
-			ticker := time.NewTicker(m.ttl / 3)
+			ticker := time.NewTicker(m.ttl / retryIntervalDivider)
+
 			for isLeader {
 				select {
 				case <-ctx.Done():
 					ticker.Stop()
+
 					if m.onDemoted != nil {
 						m.onDemoted(ctx)
 					}
+
 					return ctx.Err()
 
 				case <-ticker.C:
 					if err := m.renewLock(ctx); err != nil {
-						fmt.Printf("Failed to renew lock: %v\n", err)
+						log.Printf("Failed to renew lock: %v\n", err)
+
 						isLeader = false
+
 						ticker.Stop()
+
 						if m.onDemoted != nil {
 							m.onDemoted(ctx)
 						}
@@ -362,7 +386,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
-// GetLockInfo retrieves current lock information
+// GetLockInfo retrieves current lock information.
 func (m *Manager) GetLockInfo(ctx context.Context) (*LockInfo, error) {
 	result, err := m.s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(m.bucket),
@@ -373,6 +397,7 @@ func (m *Manager) GetLockInfo(ctx context.Context) (*LockInfo, error) {
 		if errors.As(err, &noSuchKey) {
 			return nil, ErrLockNotFound
 		}
+
 		return nil, fmt.Errorf("failed to get lock info: %w", err)
 	}
 	defer result.Body.Close()
@@ -385,12 +410,12 @@ func (m *Manager) GetLockInfo(ctx context.Context) (*LockInfo, error) {
 	return &lockInfo, nil
 }
 
-// IsExpired checks if a lock is expired
+// IsExpired checks if a lock is expired.
 func (l *LockInfo) IsExpired() bool {
 	return time.Now().After(l.Expiry)
 }
 
-// IsValid checks if a lock is valid (exists and not expired)
+// IsValid checks if a lock is valid (exists and not expired).
 func (l *LockInfo) IsValid() bool {
 	return l != nil && !l.IsExpired()
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// MockS3Client implements S3Client interface for testing
+// MockS3Client implements S3Client interface for testing.
 type MockS3Client struct {
 	objects     map[string][]byte
 	putError    error
@@ -29,7 +30,8 @@ func NewMockS3Client() *MockS3Client {
 	}
 }
 
-func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput,
+	_ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	if m.putError != nil {
 		return nil, m.putError
 	}
@@ -50,17 +52,21 @@ func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput, _
 	if err != nil {
 		return nil, err
 	}
+
 	m.objects[key] = data
+
 	return &s3.PutObjectOutput{}, nil
 }
 
-func (m *MockS3Client) GetObject(_ context.Context, params *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+func (m *MockS3Client) GetObject(_ context.Context, params *s3.GetObjectInput,
+	_ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	if m.getError != nil {
 		return nil, m.getError
 	}
 
 	key := aws.ToString(params.Key)
 	data, exists := m.objects[key]
+
 	if !exists {
 		return nil, &types.NoSuchKey{}
 	}
@@ -70,17 +76,21 @@ func (m *MockS3Client) GetObject(_ context.Context, params *s3.GetObjectInput, _
 	}, nil
 }
 
-func (m *MockS3Client) DeleteObject(_ context.Context, params *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+func (m *MockS3Client) DeleteObject(_ context.Context, params *s3.DeleteObjectInput,
+	_ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	if m.deleteError != nil {
 		return nil, m.deleteError
 	}
 
 	key := aws.ToString(params.Key)
 	delete(m.objects, key)
+
 	return &s3.DeleteObjectOutput{}, nil
 }
 
 func TestNewManager(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		client      S3Client
@@ -111,10 +121,13 @@ func TestNewManager(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			manager, err := NewManager(tt.client, tt.bucket, tt.cfg)
-			if tt.expectError {
+	for _, tCase := range tests {
+		t.Run(tCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, err := NewManager(tCase.client, tCase.bucket, tCase.cfg)
+
+			if tCase.expectError {
 				if err == nil {
 					t.Error("expected error, got nil")
 				}
@@ -122,6 +135,7 @@ func TestNewManager(t *testing.T) {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
+
 				if manager == nil {
 					t.Error("expected manager, got nil")
 				}
@@ -131,6 +145,8 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestAcquireLock(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		setupMock   func(*MockS3Client)
@@ -138,14 +154,14 @@ func TestAcquireLock(t *testing.T) {
 	}{
 		{
 			name: "Successful lock acquisition",
-			setupMock: func(m *MockS3Client) {
+			setupMock: func(_ *MockS3Client) {
 				// Start with no lock
 			},
 			expectError: nil,
 		},
 		{
 			name: "Lock exists and not expired",
-			setupMock: func(m *MockS3Client) {
+			setupMock: func(mockClient *MockS3Client) {
 				lock := LockInfo{
 					Node:      "other-node",
 					Timestamp: time.Now(),
@@ -153,14 +169,17 @@ func TestAcquireLock(t *testing.T) {
 					Term:      1,
 					Version:   "1",
 				}
-				data, _ := json.Marshal(lock)
-				m.objects["locks/leader"] = data
+				data, err := json.Marshal(lock)
+				if err != nil {
+					log.Panic("mock setup fail")
+				}
+				mockClient.objects["locks/leader"] = data
 			},
 			expectError: ErrLockExists,
 		},
 		{
 			name: "Lock exists but expired",
-			setupMock: func(m *MockS3Client) {
+			setupMock: func(mockClient *MockS3Client) {
 				lock := LockInfo{
 					Node:      "other-node",
 					Timestamp: time.Now().Add(-60 * time.Second),
@@ -168,18 +187,24 @@ func TestAcquireLock(t *testing.T) {
 					Term:      1,
 					Version:   "1",
 				}
-				data, _ := json.Marshal(lock)
-				m.objects["locks/leader"] = data
+				data, err := json.Marshal(lock)
+				if err != nil {
+					log.Panic("mock setup fail")
+				}
+				mockClient.objects["locks/leader"] = data
 			},
 			expectError: nil,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tCase := range tests {
+		t.Run(tCase.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockS3 := NewMockS3Client()
-			if tt.setupMock != nil {
-				tt.setupMock(mockS3)
+
+			if tCase.setupMock != nil {
+				tCase.setupMock(mockS3)
 			}
 
 			manager, err := NewManager(mockS3, "test-bucket", Config{
@@ -192,14 +217,16 @@ func TestAcquireLock(t *testing.T) {
 			}
 
 			err = manager.acquireLock(context.Background())
-			if !errors.Is(err, tt.expectError) {
-				t.Errorf("expected error %v, got %v", tt.expectError, err)
+			if !errors.Is(err, tCase.expectError) {
+				t.Errorf("expected error %v, got %v", tCase.expectError, err)
 			}
 		})
 	}
 }
 
 func TestRenewLock(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		setupMock   func(*MockS3Client, *Manager)
@@ -207,7 +234,7 @@ func TestRenewLock(t *testing.T) {
 	}{
 		{
 			name: "Successful renewal",
-			setupMock: func(m *MockS3Client, mgr *Manager) {
+			setupMock: func(mockClient *MockS3Client, mgr *Manager) {
 				lock := LockInfo{
 					Node:      mgr.nodeID,
 					Timestamp: time.Now(),
@@ -215,21 +242,24 @@ func TestRenewLock(t *testing.T) {
 					Term:      mgr.term,
 					Version:   "1",
 				}
-				data, _ := json.Marshal(lock)
-				m.objects[mgr.lockKey] = data
+				data, err := json.Marshal(lock)
+				if err != nil {
+					log.Panic("mock setup fail")
+				}
+				mockClient.objects[mgr.lockKey] = data
 			},
 			expectError: nil,
 		},
 		{
 			name: "Lock not found",
-			setupMock: func(m *MockS3Client, mgr *Manager) {
+			setupMock: func(_ *MockS3Client, _ *Manager) {
 				// No lock exists
 			},
 			expectError: ErrLockNotFound,
 		},
 		{
 			name: "Lock modified by other node",
-			setupMock: func(m *MockS3Client, mgr *Manager) {
+			setupMock: func(mockClient *MockS3Client, mgr *Manager) {
 				lock := LockInfo{
 					Node:      "other-node",
 					Timestamp: time.Now(),
@@ -237,44 +267,53 @@ func TestRenewLock(t *testing.T) {
 					Term:      mgr.term + 1,
 					Version:   "2",
 				}
-				data, _ := json.Marshal(lock)
-				m.objects[mgr.lockKey] = data
+				data, err := json.Marshal(lock)
+				if err != nil {
+					log.Panic("mock setup fail")
+				}
+				mockClient.objects[mgr.lockKey] = data
 			},
 			expectError: ErrLockModified,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tCase := range tests {
+		t.Run(tCase.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockS3 := NewMockS3Client()
 			manager, err := NewManager(mockS3, "test-bucket", Config{
 				TTL:        30 * time.Second,
 				NodeID:     "test-node",
 				LockPrefix: "locks/",
 			})
+
 			if err != nil {
 				t.Fatalf("failed to create manager: %v", err)
 			}
 
-			if tt.setupMock != nil {
-				tt.setupMock(mockS3, manager)
+			if tCase.setupMock != nil {
+				tCase.setupMock(mockS3, manager)
 			}
 
 			err = manager.renewLock(context.Background())
-			if !errors.Is(err, tt.expectError) {
-				t.Errorf("expected error %v, got %v", tt.expectError, err)
+			if !errors.Is(err, tCase.expectError) {
+				t.Errorf("expected error %v, got %v", tCase.expectError, err)
 			}
 		})
 	}
 }
 
 func TestLeaderCallbacks(t *testing.T) {
+	t.Parallel()
+
 	mockS3 := NewMockS3Client()
 	manager, err := NewManager(mockS3, "test-bucket", Config{
 		TTL:          2 * time.Second,
 		PollInterval: 500 * time.Millisecond,
 		NodeID:       "test-node",
 	})
+
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
@@ -283,11 +322,13 @@ func TestLeaderCallbacks(t *testing.T) {
 	demotedCalled := false
 
 	manager.SetCallbacks(
-		func(ctx context.Context) error {
+		func(_ context.Context) error {
 			electedCalled = true
+
 			return nil
 		},
-		func(ctx context.Context) {
+
+		func(_ context.Context) {
 			demotedCalled = true
 		},
 	)
@@ -315,7 +356,12 @@ func TestLeaderCallbacks(t *testing.T) {
 		Term:      100,
 		Version:   "other-1",
 	}
-	data, _ := json.Marshal(lock)
+	data, err := json.Marshal(lock)
+
+	if err != nil {
+		log.Panic("mock setup fail")
+	}
+
 	mockS3.objects[manager.lockKey] = data
 
 	// Wait for demotion
@@ -327,6 +373,8 @@ func TestLeaderCallbacks(t *testing.T) {
 }
 
 func TestLockInfo(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 
 	tests := []struct {
@@ -358,10 +406,12 @@ func TestLockInfo(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.lockInfo.IsValid(); got != tt.wantValid {
-				t.Errorf("LockInfo.IsValid() = %v, want %v", got, tt.wantValid)
+	for _, tCase := range tests {
+		t.Run(tCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tCase.lockInfo.IsValid(); got != tCase.wantValid {
+				t.Errorf("LockInfo.IsValid() = %v, want %v", got, tCase.wantValid)
 			}
 		})
 	}

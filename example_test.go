@@ -75,10 +75,9 @@ func Example() {
 
 // Worker handles leader-specific tasks
 type Worker struct {
-	nodeID      string
-	isLeader    bool
-	mu          sync.RWMutex
-	workCounter int
+	nodeID   string
+	isLeader bool
+	mu       sync.RWMutex
 }
 
 func (w *Worker) OnElected(ctx context.Context) error {
