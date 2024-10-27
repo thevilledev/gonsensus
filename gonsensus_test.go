@@ -561,6 +561,7 @@ func TestQuorum(t *testing.T) {
 	manager.SetCallbacks(
 		func(_ context.Context) error {
 			elected <- struct{}{}
+
 			return nil
 		},
 		func(_ context.Context) {
@@ -573,9 +574,12 @@ func TestQuorum(t *testing.T) {
 
 	// Start leadership monitoring in background
 	var wGroup sync.WaitGroup
+
 	wGroup.Add(1)
+
 	go func() {
 		defer wGroup.Done()
+
 		err := manager.Run(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) &&
 			!errors.Is(err, context.DeadlineExceeded) &&
@@ -601,29 +605,35 @@ func TestQuorum(t *testing.T) {
 	}
 
 	// Verify observers were registered
-	for i := 0; i < 10; i++ { // Retry a few times to handle eventual consistency
+	for iter := range 10 { // Retry a few times to handle eventual consistency
 		activeCount, err := manager.GetActiveObservers(ctx)
 		if err != nil {
 			t.Logf("failed to get active observers: %v", err)
 		} else if activeCount == quorumSize {
 			break
 		}
-		if i == 9 {
+
+		if iter == 9 {
 			t.Fatalf("failed to verify observer registration after retries")
 		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	// Start heartbeat updates
 	heartbeatCtx, stopHeartbeats := context.WithCancel(ctx)
+
 	var heartbeatWg sync.WaitGroup
 
 	// Start heartbeats for each observer
 	for i := 1; i <= quorumSize; i++ {
 		nodeID := fmt.Sprintf("test-node-%d", i)
+
 		heartbeatWg.Add(1)
-		go func(id string) {
+
+		go func(nodeId string) {
 			defer heartbeatWg.Done()
+
 			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
 
@@ -632,9 +642,9 @@ func TestQuorum(t *testing.T) {
 				case <-heartbeatCtx.Done():
 					return
 				case <-ticker.C:
-					if err := manager.UpdateHeartbeat(ctx, id); err != nil {
+					if err := manager.UpdateHeartbeat(ctx, nodeId); err != nil {
 						if !errors.Is(err, context.Canceled) {
-							t.Logf("heartbeat update failed for %s: %v", id, err)
+							t.Logf("heartbeat update failed for %s: %v", nodeId, err)
 						}
 					}
 				}
@@ -650,6 +660,7 @@ func TestQuorum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get active observers: %v", err)
 	}
+
 	if activeCount != quorumSize {
 		t.Errorf("expected %d active observers, got %d", quorumSize, activeCount)
 	}
@@ -666,6 +677,7 @@ func TestQuorum(t *testing.T) {
 
 	// Mark all observers as inactive with old heartbeats
 	veryOldTime := time.Now().Add(-30 * time.Second)
+
 	for nodeID := range lockInfo.Observers {
 		observer := lockInfo.Observers[nodeID]
 		observer.LastHeartbeat = veryOldTime

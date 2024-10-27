@@ -20,19 +20,23 @@ import (
 )
 
 var (
-	ErrLockExists    = errors.New("lock already exists")
-	ErrLockNotFound  = errors.New("lock not found")
-	ErrLockModified  = errors.New("lock was modified")
-	ErrInvalidConfig = errors.New("invalid configuration")
-	ErrLostQuorum    = errors.New("lost quorum")
+	ErrLockExists              = errors.New("lock already exists")
+	ErrLockNotFound            = errors.New("lock not found")
+	ErrLockModified            = errors.New("lock was modified")
+	ErrInvalidConfig           = errors.New("invalid configuration")
+	ErrLostQuorum              = errors.New("lost quorum")
+	ErrNoActiveLock            = errors.New("no active lock exists")
+	ErrNoObserversRegistered   = errors.New("no observers registered")
+	ErrFailedToUpdateHeartbeat = errors.New("failed to update heartbeat")
 )
 
 const (
-	defaultTTL           = 30 * time.Second
-	defaultPollInterval  = 5 * time.Second
-	retryIntervalDivider = 3 // always 1/3 of set TTL
-	defaultGracePeriod   = 5 * time.Second
-	defaultQuorumSize    = 3
+	defaultTTL                = 30 * time.Second
+	defaultPollInterval       = 5 * time.Second
+	retryIntervalDivider      = 3  // 1/3 of set TTL
+	defaultGracePeriodDivider = 10 // 1/10 of set TTL
+	defaultHeartbeatDivider   = 3  // 1/3 of set TTL
+	defaultQuorumSize         = 3
 )
 
 // S3Client defines the interface for S3 operations.
@@ -109,7 +113,7 @@ func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 	}
 
 	if cfg.GracePeriod == 0 {
-		cfg.GracePeriod = defaultGracePeriod
+		cfg.GracePeriod = cfg.TTL / defaultGracePeriodDivider
 	}
 
 	if cfg.QuorumSize == 0 {
@@ -154,7 +158,7 @@ func (m *Manager) getCurrentTerm() int64 {
 // Check if lock is expired and try to acquire if it is.
 func (m *Manager) acquireLock(ctx context.Context) error {
 	// Add grace period to prevent rapid failover
-	gracePeriod := m.ttl / 10
+	gracePeriod := m.gracePeriod
 	now := time.Now().Add(-gracePeriod)
 
 	// First check if there's an existing lock and if it's expired
@@ -406,6 +410,7 @@ func (m *Manager) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			leaderState.handleDemotion(ctx)
+
 			return ctx.Err()
 
 		default:
@@ -414,6 +419,7 @@ func (m *Manager) Run(ctx context.Context) error {
 				if !errors.Is(err, context.Canceled) {
 					log.Printf("Leader loop error: %v\n", err)
 				}
+
 				return err
 			}
 
@@ -422,10 +428,11 @@ func (m *Manager) Run(ctx context.Context) error {
 				if err := m.RegisterObserver(ctx, m.nodeID, nil); err != nil {
 					return fmt.Errorf("failed to register self as observer: %w", err)
 				}
+
 				selfRegistered = true
 
 				// Start heartbeat goroutine
-				heartbeatTicker := time.NewTicker(m.ttl / 3)
+				heartbeatTicker := time.NewTicker(m.ttl / defaultHeartbeatDivider)
 				defer heartbeatTicker.Stop()
 
 				go func() {
@@ -518,13 +525,14 @@ type ObserverInfo struct {
 	IsActive      bool              `json:"isActive"`
 }
 
-// RegisterObserver adds a node to the observers list through S3
+// RegisterObserver adds a node to the observers list through S3.
 func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata map[string]string) error {
 	if nodeID == "" {
 		return fmt.Errorf("%w: nodeID cannot be empty", ErrInvalidConfig)
 	}
 
-	for retries := 0; retries < 3; retries++ {
+	// Retry registration a few times in case of conflicts
+	for range 3 {
 		// Get current lock info
 		lockInfo, err := m.GetLockInfo(ctx)
 		if err != nil && !errors.Is(err, ErrLockNotFound) {
@@ -534,7 +542,8 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 		// If no lock exists yet, we can't register observers
 		if lockInfo == nil {
 			log.Printf("DEBUG: No lock exists when trying to register observer %s", nodeID)
-			return fmt.Errorf("no active lock exists")
+
+			return ErrNoActiveLock
 		}
 
 		log.Printf("DEBUG: Current lock before registration - Node: %s, Term: %d, Version: %s, Observer count: %d",
@@ -554,6 +563,7 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 		// Initialize or copy observers map
 		if lockInfo.Observers == nil {
 			newLockInfo.Observers = make(map[string]ObserverInfo)
+
 			log.Printf("DEBUG: Initializing new observers map for lock")
 		} else {
 			// Deep copy existing observers
@@ -592,8 +602,10 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 			var apiErr smithy.APIError
 			if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
 				log.Printf("DEBUG: Conflict during registration of observer %s, retrying", nodeID)
+
 				continue
 			}
+
 			return fmt.Errorf("failed to update lock info: %w", err)
 		}
 
@@ -605,20 +617,22 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 
 		if verifyLock.Observers == nil || verifyLock.Observers[nodeID].LastHeartbeat.IsZero() {
 			log.Printf("DEBUG: Observer %s not found in lock after registration", nodeID)
+
 			continue
 		}
 
 		log.Printf("DEBUG: Successfully registered observer %s, total observers: %d",
 			nodeID, len(verifyLock.Observers))
+
 		return nil
 	}
 
-	return fmt.Errorf("failed to register observer after retries")
+	return ErrFailedToUpdateHeartbeat
 }
 
-// UpdateHeartbeat updates the last heartbeat time for a node in S3
+// UpdateHeartbeat updates the last heartbeat time for a node in S3.
 func (m *Manager) UpdateHeartbeat(ctx context.Context, nodeID string) error {
-	for retries := 0; retries < 3; retries++ {
+	for range 3 {
 		// Get current lock info
 		lockInfo, err := m.GetLockInfo(ctx)
 		if err != nil {
@@ -630,13 +644,15 @@ func (m *Manager) UpdateHeartbeat(ctx context.Context, nodeID string) error {
 
 		if lockInfo.Observers == nil {
 			log.Printf("DEBUG: No observers map found during heartbeat update for %s", nodeID)
-			return fmt.Errorf("no observers registered")
+
+			return ErrNoObserversRegistered
 		}
 
 		observer, exists := lockInfo.Observers[nodeID]
 		if !exists {
 			log.Printf("DEBUG: Node %s not found in observers map", nodeID)
-			return fmt.Errorf("node %s not registered", nodeID)
+
+			return fmt.Errorf("%w: node %s", ErrInvalidConfig, nodeID)
 		}
 
 		// Update heartbeat while preserving all other data
@@ -663,19 +679,22 @@ func (m *Manager) UpdateHeartbeat(ctx context.Context, nodeID string) error {
 			var apiErr smithy.APIError
 			if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
 				log.Printf("DEBUG: Conflict during heartbeat update for %s, retrying", nodeID)
+
 				continue
 			}
+
 			return fmt.Errorf("failed to update lock info: %w", err)
 		}
 
 		log.Printf("DEBUG: Successfully updated heartbeat for %s", nodeID)
+
 		return nil
 	}
 
-	return fmt.Errorf("failed to update heartbeat after retries")
+	return ErrFailedToUpdateHeartbeat
 }
 
-// GetActiveObservers returns the count of currently active observers from S3
+// GetActiveObservers returns the count of currently active observers from S3.
 func (m *Manager) GetActiveObservers(ctx context.Context) (int, error) {
 	lockInfo, err := m.GetLockInfo(ctx)
 	if err != nil {
@@ -829,7 +848,7 @@ func isAWSErrorCode(err error, code string) bool {
 	return false
 }
 
-// Modified the Manager's verifyQuorum method for more aggressive checking
+// Modified the Manager's verifyQuorum method for more aggressive checking.
 func (m *Manager) verifyQuorum(ctx context.Context) bool {
 	if !m.requireQuorum {
 		return true // Always return true if quorum checking is disabled
@@ -838,6 +857,7 @@ func (m *Manager) verifyQuorum(ctx context.Context) bool {
 	lockInfo, err := m.GetLockInfo(ctx)
 	if err != nil {
 		log.Printf("Failed to get lock info during quorum check: %v", err)
+
 		return false
 	}
 
@@ -848,6 +868,7 @@ func (m *Manager) verifyQuorum(ctx context.Context) bool {
 	for nodeID, observer := range lockInfo.Observers {
 		if observer.IsActive && now.Sub(observer.LastHeartbeat) < m.ttl {
 			activeCount++
+
 			log.Printf("DEBUG: Node %s is active in quorum check, last heartbeat: %v",
 				nodeID, now.Sub(observer.LastHeartbeat))
 		} else {
