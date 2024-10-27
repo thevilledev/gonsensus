@@ -1,4 +1,4 @@
-name: lint
+name: test
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
-      - '.github/workflows/lint.yml'
+      - '.github/workflows/test.yml'
 
 jobs:
   Test:
