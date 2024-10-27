@@ -318,14 +318,17 @@ func (m *Manager) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			leaderState.handleDemotion(ctx)
+
 			return ctx.Err()
 		default:
 			if err := leaderState.runLeaderLoop(ctx); err != nil {
 				if !errors.Is(err, context.Canceled) {
 					log.Printf("Leader loop error: %v\n", err)
 				}
+
 				return err
 			}
+
 			time.Sleep(m.pollInterval)
 		}
 	}
@@ -399,10 +402,12 @@ func (s *leaderState) tryBecomeLeader(ctx context.Context) error {
 		if !errors.Is(err, ErrLockExists) {
 			log.Printf("Error acquiring lock: %v\n", err)
 		}
+
 		return nil
 	}
 
 	s.isLeader = true
+
 	return s.handleElection(ctx)
 }
 
@@ -413,8 +418,10 @@ func (s *leaderState) handleElection(ctx context.Context) error {
 
 	if err := s.manager.onElected(ctx); err != nil {
 		log.Printf("Error in leader callback: %v\n", err)
+
 		s.isLeader = false
 	}
+
 	return nil
 }
 
@@ -422,6 +429,7 @@ func (s *leaderState) handleDemotion(ctx context.Context) {
 	if s.isLeader && s.manager.onDemoted != nil {
 		s.manager.onDemoted(ctx)
 	}
+
 	s.isLeader = false
 }
 
@@ -433,6 +441,7 @@ func (s *leaderState) runLeaderMaintenance(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			s.handleDemotion(ctx)
+
 			return ctx.Err()
 
 		case <-ticker.C:
@@ -441,6 +450,7 @@ func (s *leaderState) runLeaderMaintenance(ctx context.Context) error {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -448,7 +458,9 @@ func (s *leaderState) renewLeadership(ctx context.Context) error {
 	if err := s.manager.renewLock(ctx); err != nil {
 		log.Printf("Failed to renew lock: %v\n", err)
 		s.handleDemotion(ctx)
+
 		return err
 	}
+
 	return nil
 }
