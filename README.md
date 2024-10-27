@@ -4,7 +4,7 @@
 [![test](https://github.com/thevilledev/gonsensus/actions/workflows/test.yml/badge.svg)](https://github.com/thevilledev/gonsensus/actions/workflows/test.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/thevilledev/gonsensus)](https://goreportcard.com/report/github.com/thevilledev/gonsensus)
 
-"Gonsensus" is a distributed consensus implementation, written in Go, using S3 conditional operations for leader election. It provides a simple, reliable way to coordinate distributed systems using *any* S3 compatible object storage as the backing store. Conditional writes are required. See [RFC 7232](https://datatracker.ietf.org/doc/html/rfc7232) for more details about conditional requests in general.
+**Gonsensus** is a distributed consensus implementation, written in Go, using S3 conditional operations for leader election. It provides a simple, reliable way to coordinate distributed systems using *any* S3 compatible object storage as the backing store. Conditional writes are required. See [RFC 7232](https://datatracker.ietf.org/doc/html/rfc7232) for more details about conditional requests in general.
 
 See [example_test.go](example_test.go) for a fully fledged example use case.
 
@@ -17,6 +17,28 @@ See [example_test.go](example_test.go) for a fully fledged example use case.
 - Clean shutdown handling
 - Thread-safe operations
 - No external dependencies beyond AWS SDK
+
+## How it works
+
+Gonsensus uses atomic operations to implement a distributed lock mechanism:
+
+### Lock Acquisition
+
+- Nodes attempt to create a lock file in S3
+- Only one node can hold the lock at a time
+- Lock includes expiry time and version information
+
+### Leader Maintenance
+
+- Leader renews lock every TTL/3 period
+- Uses versioning to ensure atomic updates
+- Automatic failover if leader fails to renew
+
+### Lock Release
+
+- Automatic on process termination
+- Clean shutdown on signals
+- Other nodes can take over after TTL expiry
 
 ## Installation
 
@@ -104,27 +126,7 @@ export AWS_PROFILE=xyz
 make test-acc
 ```
 
-## How it works
-
-Gonsensus uses atomic operations to implement a distributed lock mechanism:
-
-### Lock Acquisition
-
-- Nodes attempt to create a lock file in S3
-- Only one node can hold the lock at a time
-- Lock includes expiry time and version information
-
-### Leader Maintenance
-
-- Leader renews lock every TTL/3 period
-- Uses versioning to ensure atomic updates
-- Automatic failover if leader fails to renew
-
-### Lock Release
-
-- Automatic on process termination
-- Clean shutdown on signals
-- Other nodes can take over after TTL expiry
+Note that acceptance tests require a bucket with the name of "my-bucket-1".
 
 ## License
 
