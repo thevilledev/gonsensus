@@ -36,7 +36,7 @@ import (
     
     "github.com/aws/aws-sdk-go-v2/config"
     "github.com/aws/aws-sdk-go-v2/service/s3"
-    "github.com/yourusername/gonsensus"
+    "github.com/thevilledev/gonsensus"
 )
 
 func main() {
@@ -77,6 +77,31 @@ func main() {
         log.Fatal(err)
     }
 }
+```
+
+## Authentication
+
+This project relies on the AWS S3 client default authentication mechanism. See AWS documentation for full reference on [configuration and credentials presedence](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html#configure-precedence).
+
+In short, if you want to use environment variables you may do it like this:
+
+```bash
+export AWS_ACCESS_KEY_ID=
+export AWS_SECRET_ACCESS_KEY=
+export AWS_ENDPOINT_URL_S3=
+export AWS_ENDPOINT_URL_IAM=
+export AWS_ENDPOINT_URL_STS=
+export AWS_REGION=
+# run acceptance tests
+make test-acc
+```
+
+If your configuration is in a local AWS profile in `~/.aws/config` you may do it like this instead:
+
+```bash
+export AWS_PROFILE=xyz
+# run acceptance tests
+make test-acc
 ```
 
 ## How it works
