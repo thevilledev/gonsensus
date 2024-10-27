@@ -12,6 +12,6 @@ test:
 	go test -v -race -run ^Test -parallel=8 ./...
 
 test-acc:
-	go test -timeout 30s -run ^Example$ ./
+	go test -timeout 30s -run ^Example ./
 
 .PHONY: fmt lint test

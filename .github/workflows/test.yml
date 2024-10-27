@@ -30,3 +30,25 @@ jobs:
 
       - name: Run tests
         run: make test
+
+  AcceptanceTest:
+    needs: Test
+    runs-on: ubuntu-latest
+    env:
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_ENDPOINT_URL_S3: ${{ secrets.AWS_ENDPOINT_URL_S3 }}
+      AWS_ENDPOINT_URL_IAM: ${{ secrets.AWS_ENDPOINT_URL_IAM }}
+      AWS_ENDPOINT_URL_STS: ${{ secrets.AWS_ENDPOINT_URL_STS }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Run tests
+        run: make test-acc
