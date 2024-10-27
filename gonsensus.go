@@ -47,14 +47,6 @@ type Config struct {
 	NodeID       string
 }
 
-type LockInfo struct {
-	Node      string    `json:"node"`
-	Timestamp time.Time `json:"timestamp"`
-	Expiry    time.Time `json:"expiry"`
-	Term      int64     `json:"term"`
-	Version   string    `json:"version"`
-}
-
 type Manager struct {
 	s3Client     S3Client
 	bucket       string
@@ -410,6 +402,14 @@ func (m *Manager) GetLockInfo(ctx context.Context) (*LockInfo, error) {
 	}
 
 	return &lockInfo, nil
+}
+
+type LockInfo struct {
+	Node      string    `json:"node"`
+	Timestamp time.Time `json:"timestamp"`
+	Expiry    time.Time `json:"expiry"`
+	Term      int64     `json:"term"`
+	Version   string    `json:"version"`
 }
 
 // IsExpired checks if a lock is expired.
