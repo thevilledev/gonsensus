@@ -66,11 +66,11 @@ func Example() {
 		return
 	}
 
-	fmt.Printf("Current leader: %s (Term: %d)\n", lockInfo.Node, lockInfo.Term)
+	fmt.Printf("Current leader: %s\n", lockInfo.Node)
 
 	// Output:
 	// Node example-node-1 elected as leader
-	// Current leader: example-node-1 (Term: 1)
+	// Current leader: example-node-1
 }
 
 // Worker handles leader-specific tasks
