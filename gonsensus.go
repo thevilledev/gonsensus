@@ -59,16 +59,6 @@ type Manager struct {
 	onDemoted    func(context.Context)
 }
 
-// Helper function to check AWS error codes.
-func isAWSErrorCode(err error, code string) bool {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.ErrorCode() == code
-	}
-
-	return false
-}
-
 func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 	if client == nil {
 		return nil, fmt.Errorf("%w: S3 client is required", ErrInvalidConfig)
@@ -463,4 +453,14 @@ func (s *leaderState) renewLeadership(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Helper function to check AWS error codes.
+func isAWSErrorCode(err error, code string) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == code
+	}
+
+	return false
 }
