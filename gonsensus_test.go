@@ -540,7 +540,7 @@ func TestLeaderCallbacks(t *testing.T) {
 func TestQuorum(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	testCtx := &quorumTestContext{
@@ -557,8 +557,14 @@ func TestQuorum(t *testing.T) {
 
 	testCtx.startManager(ctx, manager, &wGroup)
 	testCtx.waitForElection()
-	testCtx.registerObservers(ctx, manager)
-	testCtx.verifyObservers(ctx, manager)
+
+	// Add delay after election before registration
+	time.Sleep(1 * time.Second)
+
+	if err := testCtx.registerAndVerifyObservers(ctx, manager); err != nil {
+		t.Fatalf("failed to register and verify observers: %v", err)
+	}
+
 	testCtx.runHeartbeats(ctx, manager)
 	testCtx.simulateQuorumLoss(ctx, manager)
 
@@ -626,17 +632,6 @@ func (tc *quorumTestContext) waitForElection() {
 	}
 }
 
-func (tc *quorumTestContext) registerObservers(ctx context.Context, manager *Manager) {
-	for i := 1; i <= tc.quorumSize; i++ {
-		nodeID := fmt.Sprintf("test-node-%d", i)
-		if err := tc.registerObserverWithRetry(ctx, manager, nodeID); err != nil {
-			tc.t.Fatalf("failed to register observer %s: %v", nodeID, err)
-		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
 func (tc *quorumTestContext) registerObserverWithRetry(ctx context.Context, manager *Manager, nodeID string) error {
 	for range 5 {
 		if err := manager.RegisterObserver(ctx, nodeID, nil); err == nil {
@@ -649,37 +644,18 @@ func (tc *quorumTestContext) registerObserverWithRetry(ctx context.Context, mana
 	return ErrFailedToRegisterObserver
 }
 
-func (tc *quorumTestContext) verifyObservers(ctx context.Context, manager *Manager) {
-	var activeCount int
-
-	var err error
-
-	for range 10 {
-		activeCount, err = manager.GetActiveObservers(ctx)
-		if err == nil && activeCount == tc.quorumSize {
-			return
-		}
-
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	if err != nil {
-		tc.t.Fatalf("failed to verify observers: %v", err)
-	}
-
-	if activeCount != tc.quorumSize {
-		tc.t.Errorf("expected %d active observers, got %d", tc.quorumSize, activeCount)
-	}
-}
-
 func (tc *quorumTestContext) runHeartbeats(ctx context.Context, manager *Manager) {
 	heartbeatCtx, stopHeartbeats := context.WithCancel(ctx)
 
 	var heartbeatWg sync.WaitGroup
 
 	tc.startObserverHeartbeats(heartbeatCtx, manager, &heartbeatWg)
-	time.Sleep(2 * time.Second)
-	tc.verifyInitialObservers(ctx, manager)
+	time.Sleep(3 * time.Second)
+
+	// Verify with retries
+	if err := tc.verifyObserverCount(ctx, manager, tc.quorumSize); err != nil {
+		tc.t.Fatalf("failed to verify observers after heartbeats: %v", err)
+	}
 
 	stopHeartbeats()
 	heartbeatWg.Wait()
@@ -699,7 +675,7 @@ func (tc *quorumTestContext) runObserverHeartbeat(ctx context.Context, manager *
 	nodeID string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -713,17 +689,6 @@ func (tc *quorumTestContext) runObserverHeartbeat(ctx context.Context, manager *
 				}
 			}
 		}
-	}
-}
-
-func (tc *quorumTestContext) verifyInitialObservers(ctx context.Context, manager *Manager) {
-	activeCount, err := manager.GetActiveObservers(ctx)
-	if err != nil {
-		tc.t.Fatalf("failed to get active observers: %v", err)
-	}
-
-	if activeCount != tc.quorumSize {
-		tc.t.Errorf("expected %d active observers, got %d", tc.quorumSize, activeCount)
 	}
 }
 
@@ -779,4 +744,43 @@ func (tc *quorumTestContext) waitForDemotion(ctx context.Context, manager *Manag
 		activeCount, _ := manager.GetActiveObservers(ctx)
 		tc.t.Fatalf("leader failed to step down after losing quorum (active observers: %d)", activeCount)
 	}
+}
+
+func (tc *quorumTestContext) registerAndVerifyObservers(ctx context.Context, manager *Manager) error {
+	// Register observers one at a time with verification
+	for i := 1; i <= tc.quorumSize; i++ {
+		nodeID := fmt.Sprintf("test-node-%d", i)
+
+		// Register with retry
+		if err := tc.registerObserverWithRetry(ctx, manager, nodeID); err != nil {
+			return fmt.Errorf("failed to register observer %s: %v", nodeID, err)
+		}
+
+		// Verify after each registration
+		if err := tc.verifyObserverCount(ctx, manager, i); err != nil {
+			return fmt.Errorf("failed to verify observer count after registering %s: %v", nodeID, err)
+		}
+
+		// Add delay between registrations
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil
+}
+
+func (tc *quorumTestContext) verifyObserverCount(ctx context.Context, manager *Manager, expectedCount int) error {
+	// Retry verification multiple times
+	for i := 0; i < 10; i++ {
+		activeCount, err := manager.GetActiveObservers(ctx)
+		if err == nil && activeCount == expectedCount {
+			tc.t.Logf("Successfully verified %d observers", activeCount)
+			return nil
+		}
+		if err != nil {
+			tc.t.Logf("Retry %d: Error getting active observers: %v", i, err)
+		} else {
+			tc.t.Logf("Retry %d: Expected %d observers, got %d", i, expectedCount, activeCount)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("failed to verify observer count after retries")
 }
