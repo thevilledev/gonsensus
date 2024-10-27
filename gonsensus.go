@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -53,10 +55,12 @@ type Manager struct {
 	nodeID       string
 	lockKey      string
 	ttl          time.Duration
-	term         int64
+	term         atomic.Int64
 	pollInterval time.Duration
-	onElected    func(context.Context) error
-	onDemoted    func(context.Context)
+
+	callbackMu sync.RWMutex
+	onElected  func(context.Context) error
+	onDemoted  func(context.Context)
 }
 
 func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
@@ -102,8 +106,20 @@ func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 }
 
 func (m *Manager) SetCallbacks(onElected func(context.Context) error, onDemoted func(context.Context)) {
+	m.callbackMu.Lock()
+	defer m.callbackMu.Unlock()
+
 	m.onElected = onElected
 	m.onDemoted = onDemoted
+}
+
+// Thread-safe term management.
+func (m *Manager) incrementTerm() int64 {
+	return m.term.Add(1)
+}
+
+func (m *Manager) getCurrentTerm() int64 {
+	return m.term.Load()
 }
 
 // Check if lock is expired and try to acquire if it is.
@@ -122,14 +138,14 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 	}
 
 	// Lock doesn't exist or is expired, try to acquire it
-	m.term++ // Increment term for new leadership attempt
+	newTerm := m.incrementTerm() // Increment term for new leadership attempt
 
 	lockInfo := LockInfo{
 		Node:      m.nodeID,
 		Timestamp: now,
 		Expiry:    now.Add(m.ttl),
-		Term:      m.term,
-		Version:   fmt.Sprintf("%d-%s-%d", now.UnixNano(), m.nodeID, m.term),
+		Term:      newTerm,
+		Version:   fmt.Sprintf("%d-%s-%d", now.UnixNano(), m.nodeID, newTerm),
 	}
 
 	lockData, err := json.Marshal(lockInfo)
@@ -234,18 +250,19 @@ func (m *Manager) renewLock(ctx context.Context) error {
 	}
 
 	// Verify we still own the lock
-	if currentLock.Node != m.nodeID || currentLock.Term != m.term {
+	if currentLock.Node != m.nodeID || currentLock.Term != m.getCurrentTerm() {
 		return ErrLockModified
 	}
 
 	// Create new lock info with updated timestamp and version
 	now := time.Now()
+	curTerm := m.getCurrentTerm()
 	newLock := LockInfo{
 		Node:      m.nodeID,
 		Timestamp: now,
 		Expiry:    now.Add(m.ttl),
-		Term:      m.term,
-		Version:   fmt.Sprintf("%d-%s-%d", now.UnixNano(), m.nodeID, m.term),
+		Term:      curTerm,
+		Version:   fmt.Sprintf("%d-%s-%d", now.UnixNano(), m.nodeID, curTerm),
 	}
 
 	lockData, err := json.Marshal(newLock)

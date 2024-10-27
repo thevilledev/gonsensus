@@ -259,7 +259,7 @@ func TestRenewLock(t *testing.T) {
 					Node:      mgr.nodeID,
 					Timestamp: time.Now(),
 					Expiry:    time.Now().Add(30 * time.Second),
-					Term:      mgr.term,
+					Term:      mgr.getCurrentTerm(),
 					Version:   "1",
 				}
 				data, err := json.Marshal(lock)
@@ -284,7 +284,7 @@ func TestRenewLock(t *testing.T) {
 					Node:      "other-node",
 					Timestamp: time.Now(),
 					Expiry:    time.Now().Add(30 * time.Second),
-					Term:      mgr.term + 1,
+					Term:      mgr.incrementTerm(),
 					Version:   "2",
 				}
 				data, err := json.Marshal(lock)
