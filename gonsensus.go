@@ -173,11 +173,14 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 	}
 
 	// Important: Check the last known term and ensure we advance it
-	newTerm := m.incrementTerm()
-	if currentLock != nil && newTerm <= currentLock.Term {
+	var newTerm int64
+	if currentLock == nil {
+		newTerm = 1
+	} else {
 		newTerm = currentLock.Term + 1
-		m.term.Store(newTerm)
 	}
+
+	m.term.Store(newTerm)
 
 	// Create new fence token and last known leader
 	lastKnownLeader := ""
