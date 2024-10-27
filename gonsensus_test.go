@@ -17,6 +17,10 @@ import (
 	"github.com/aws/smithy-go"
 )
 
+var (
+	errSimulated = errors.New("simulated error")
+)
+
 // MockS3Client implements S3Client interface for testing.
 type MockS3Client struct {
 	objects     map[string][]byte
@@ -412,7 +416,7 @@ func TestLeaderCallbacks(t *testing.T) {
 				mockClient.mu.Lock()
 				defer mockClient.mu.Unlock()
 				// Simulate failure during lock renewal
-				mockClient.putError = errors.New("simulated error")
+				mockClient.putError = errSimulated
 			},
 			expectElected: true,
 			expectDemoted: true,
@@ -442,11 +446,12 @@ func TestLeaderCallbacks(t *testing.T) {
 			}
 
 			manager.SetCallbacks(
-				func(ctx context.Context) error {
+				func(_ context.Context) error {
 					elected <- struct{}{}
+
 					return nil
 				},
-				func(ctx context.Context) {
+				func(_ context.Context) {
 					demoted <- struct{}{}
 				},
 			)
@@ -455,10 +460,13 @@ func TestLeaderCallbacks(t *testing.T) {
 			defer cancel()
 
 			// Start leadership monitoring in background
-			var wg sync.WaitGroup
-			wg.Add(1)
+			var wGroup sync.WaitGroup
+
+			wGroup.Add(1)
+
 			go func() {
-				defer wg.Done()
+				defer wGroup.Done()
+
 				err := manager.Run(ctx)
 				if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 					t.Errorf("unexpected error from Run: %v", err)
@@ -492,18 +500,19 @@ func TestLeaderCallbacks(t *testing.T) {
 			}
 
 			// Check multiple times over 3 seconds
-			for i := 0; i < 6; i++ {
+			for range 6 {
 				checkCallbacks()
 				time.Sleep(500 * time.Millisecond)
 			}
 
 			// Cancel context and wait for cleanup
 			cancel()
-			wg.Wait()
+			wGroup.Wait()
 
 			if gotElected != tCase.expectElected {
 				t.Errorf("expected elected=%v, got %v", tCase.expectElected, gotElected)
 			}
+
 			if gotDemoted != tCase.expectDemoted {
 				t.Errorf("expected demoted=%v, got %v", tCase.expectDemoted, gotDemoted)
 			}
