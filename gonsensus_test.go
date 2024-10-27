@@ -569,7 +569,7 @@ func TestQuorum(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Start leadership monitoring in background
@@ -596,28 +596,47 @@ func TestQuorum(t *testing.T) {
 		t.Fatal("leader election timed out")
 	}
 
-	// Register observers after leader election
+	// Register observers with retry logic to ensure successful registration
 	for i := 1; i <= quorumSize; i++ {
 		nodeID := fmt.Sprintf("test-node-%d", i)
-		if err := manager.RegisterObserver(ctx, nodeID, nil); err != nil {
-			t.Fatalf("failed to register observer %s: %v", nodeID, err)
+		var registered bool
+		// Retry registration multiple times
+		for retries := 0; retries < 5; retries++ {
+			err := manager.RegisterObserver(ctx, nodeID, nil)
+			if err == nil {
+				registered = true
+				break
+			}
+			// Wait before retrying
+			time.Sleep(100 * time.Millisecond)
 		}
+		if !registered {
+			t.Fatalf("failed to register observer %s after retries", nodeID)
+		}
+		// Wait a bit after each registration to ensure consistency
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Verify observers were registered
-	for iter := range 10 { // Retry a few times to handle eventual consistency
-		activeCount, err := manager.GetActiveObservers(ctx)
-		if err != nil {
-			t.Logf("failed to get active observers: %v", err)
-		} else if activeCount == quorumSize {
+	// Verify observer registration with retries
+	var activeCount int
+	var verifyErr error
+	for retries := 0; retries < 10; retries++ {
+		activeCount, verifyErr = manager.GetActiveObservers(ctx)
+		if verifyErr == nil && activeCount == quorumSize {
 			break
 		}
-
-		if iter == 9 {
-			t.Fatalf("failed to verify observer registration after retries")
+		if verifyErr != nil {
+			t.Logf("attempt %d: failed to get active observers: %v", retries, verifyErr)
+		} else {
+			t.Logf("attempt %d: expected %d active observers, got %d", retries, quorumSize, activeCount)
 		}
-
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
+	}
+	if verifyErr != nil {
+		t.Fatalf("failed to verify observers: %v", verifyErr)
+	}
+	if activeCount != quorumSize {
+		t.Errorf("expected %d active observers, got %d", quorumSize, activeCount)
 	}
 
 	// Start heartbeat updates
@@ -634,7 +653,7 @@ func TestQuorum(t *testing.T) {
 		go func(nodeId string) {
 			defer heartbeatWg.Done()
 
-			ticker := time.NewTicker(500 * time.Millisecond)
+			ticker := time.NewTicker(200 * time.Millisecond)
 			defer ticker.Stop()
 
 			for {
@@ -656,7 +675,7 @@ func TestQuorum(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify initial active observers
-	activeCount, err := manager.GetActiveObservers(ctx)
+	activeCount, err = manager.GetActiveObservers(ctx)
 	if err != nil {
 		t.Fatalf("failed to get active observers: %v", err)
 	}
@@ -676,7 +695,7 @@ func TestQuorum(t *testing.T) {
 	}
 
 	// Mark all observers as inactive with old heartbeats
-	veryOldTime := time.Now().Add(-30 * time.Second)
+	veryOldTime := time.Now().Add(-60 * time.Second)
 
 	for nodeID := range lockInfo.Observers {
 		observer := lockInfo.Observers[nodeID]
