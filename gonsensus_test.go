@@ -262,6 +262,10 @@ func TestRenewLock(t *testing.T) {
 					Term:      mgr.getCurrentTerm(),
 					Version:   "1",
 				}
+
+				// Initialize the lease with the current lock info
+				mgr.lease.UpdateLease(&lock)
+
 				data, err := json.Marshal(lock)
 				if err != nil {
 					log.Panic("mock setup fail")
@@ -280,14 +284,26 @@ func TestRenewLock(t *testing.T) {
 		{
 			name: "Lock modified by other node",
 			setupMock: func(mockClient *MockS3Client, mgr *Manager) {
-				lock := LockInfo{
+				originalLock := LockInfo{
+					Node:      "other-node",
+					Timestamp: time.Now(),
+					Expiry:    time.Now().Add(30 * time.Second),
+					Term:      mgr.incrementTerm(),
+					Version:   "1",
+				}
+
+				mgr.lease.UpdateLease(&originalLock)
+
+				// Then simulate modification by another node
+				modifiedLock := LockInfo{
 					Node:      "other-node",
 					Timestamp: time.Now(),
 					Expiry:    time.Now().Add(30 * time.Second),
 					Term:      mgr.incrementTerm(),
 					Version:   "2",
 				}
-				data, err := json.Marshal(lock)
+
+				data, err := json.Marshal(modifiedLock)
 				if err != nil {
 					log.Panic("mock setup fail")
 				}
