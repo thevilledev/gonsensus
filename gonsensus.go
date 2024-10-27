@@ -20,14 +20,15 @@ import (
 )
 
 var (
-	ErrLockExists              = errors.New("lock already exists")
-	ErrLockNotFound            = errors.New("lock not found")
-	ErrLockModified            = errors.New("lock was modified")
-	ErrInvalidConfig           = errors.New("invalid configuration")
-	ErrLostQuorum              = errors.New("lost quorum")
-	ErrNoActiveLock            = errors.New("no active lock exists")
-	ErrNoObserversRegistered   = errors.New("no observers registered")
-	ErrFailedToUpdateHeartbeat = errors.New("failed to update heartbeat")
+	ErrLockExists               = errors.New("lock already exists")
+	ErrLockNotFound             = errors.New("lock not found")
+	ErrLockModified             = errors.New("lock was modified")
+	ErrInvalidConfig            = errors.New("invalid configuration")
+	ErrLostQuorum               = errors.New("lost quorum")
+	ErrNoActiveLock             = errors.New("no active lock exists")
+	ErrNoObserversRegistered    = errors.New("no observers registered")
+	ErrFailedToUpdateHeartbeat  = errors.New("failed to update heartbeat")
+	ErrFailedToRegisterObserver = errors.New("failed to register observer")
 )
 
 const (
@@ -630,7 +631,7 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 		return nil
 	}
 
-	return ErrFailedToUpdateHeartbeat
+	return ErrFailedToRegisterObserver
 }
 
 // UpdateHeartbeat updates the last heartbeat time for a node in S3.

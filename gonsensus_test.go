@@ -540,161 +540,210 @@ func TestLeaderCallbacks(t *testing.T) {
 func TestQuorum(t *testing.T) {
 	t.Parallel()
 
-	mockS3 := NewMockS3Client()
-	quorumSize := 3
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	elected := make(chan struct{}, 1)
-	demoted := make(chan struct{}, 1)
+	testCtx := &quorumTestContext{
+		t:          t,
+		mockS3:     NewMockS3Client(),
+		quorumSize: 3,
+		elected:    make(chan struct{}, 1),
+		demoted:    make(chan struct{}, 1),
+	}
 
-	manager, err := NewManager(mockS3, "test-bucket", Config{
+	manager := testCtx.setupManager()
+
+	var wGroup sync.WaitGroup
+
+	testCtx.startManager(ctx, manager, &wGroup)
+	testCtx.waitForElection()
+	testCtx.registerObservers(ctx, manager)
+	testCtx.verifyObservers(ctx, manager)
+	testCtx.runHeartbeats(ctx, manager)
+	testCtx.simulateQuorumLoss(ctx, manager)
+
+	// Cleanup
+	cancel()
+	wGroup.Wait()
+}
+
+type quorumTestContext struct {
+	t          *testing.T
+	mockS3     *MockS3Client
+	quorumSize int
+	elected    chan struct{}
+	demoted    chan struct{}
+}
+
+func (tc *quorumTestContext) setupManager() *Manager {
+	manager, err := NewManager(tc.mockS3, "test-bucket", Config{
 		TTL:           2 * time.Second,
 		PollInterval:  500 * time.Millisecond,
 		NodeID:        "test-node-1",
 		LockPrefix:    "locks/",
 		RequireQuorum: true,
-		QuorumSize:    quorumSize,
+		QuorumSize:    tc.quorumSize,
 	})
 	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
+		tc.t.Fatalf("failed to create manager: %v", err)
 	}
 
 	manager.SetCallbacks(
 		func(_ context.Context) error {
-			elected <- struct{}{}
+			tc.elected <- struct{}{}
 
 			return nil
 		},
 		func(_ context.Context) {
-			demoted <- struct{}{}
+			tc.demoted <- struct{}{}
 		},
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	return manager
+}
 
-	// Start leadership monitoring in background
-	var wGroup sync.WaitGroup
-
-	wGroup.Add(1)
+func (tc *quorumTestContext) startManager(ctx context.Context, manager *Manager, wg *sync.WaitGroup) {
+	wg.Add(1)
 
 	go func() {
-		defer wGroup.Done()
+		defer wg.Done()
 
 		err := manager.Run(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) &&
 			!errors.Is(err, context.DeadlineExceeded) &&
 			!errors.Is(err, ErrLostQuorum) {
-			t.Errorf("unexpected error from Run: %v", err)
+			tc.t.Errorf("unexpected error from Run: %v", err)
 		}
 	}()
+}
 
-	// Wait for leader election
+func (tc *quorumTestContext) waitForElection() {
 	select {
-	case <-elected:
+	case <-tc.elected:
 		log.Printf("DEBUG: Leader elected, proceeding with test")
 	case <-time.After(3 * time.Second):
-		t.Fatal("leader election timed out")
+		tc.t.Fatal("leader election timed out")
 	}
+}
 
-	// Register observers with retry logic to ensure successful registration
-	for i := 1; i <= quorumSize; i++ {
+func (tc *quorumTestContext) registerObservers(ctx context.Context, manager *Manager) {
+	for i := 1; i <= tc.quorumSize; i++ {
 		nodeID := fmt.Sprintf("test-node-%d", i)
-		var registered bool
-		// Retry registration multiple times
-		for retries := 0; retries < 5; retries++ {
-			err := manager.RegisterObserver(ctx, nodeID, nil)
-			if err == nil {
-				registered = true
-				break
-			}
-			// Wait before retrying
-			time.Sleep(100 * time.Millisecond)
+		if err := tc.registerObserverWithRetry(ctx, manager, nodeID); err != nil {
+			tc.t.Fatalf("failed to register observer %s: %v", nodeID, err)
 		}
-		if !registered {
-			t.Fatalf("failed to register observer %s after retries", nodeID)
+
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (tc *quorumTestContext) registerObserverWithRetry(ctx context.Context, manager *Manager, nodeID string) error {
+	for range 5 {
+		if err := manager.RegisterObserver(ctx, nodeID, nil); err == nil {
+			return nil
 		}
-		// Wait a bit after each registration to ensure consistency
+
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Verify observer registration with retries
+	return ErrFailedToRegisterObserver
+}
+
+func (tc *quorumTestContext) verifyObservers(ctx context.Context, manager *Manager) {
 	var activeCount int
-	var verifyErr error
-	for retries := 0; retries < 10; retries++ {
-		activeCount, verifyErr = manager.GetActiveObservers(ctx)
-		if verifyErr == nil && activeCount == quorumSize {
-			break
+
+	var err error
+
+	for range 10 {
+		activeCount, err = manager.GetActiveObservers(ctx)
+		if err == nil && activeCount == tc.quorumSize {
+			return
 		}
-		if verifyErr != nil {
-			t.Logf("attempt %d: failed to get active observers: %v", retries, verifyErr)
-		} else {
-			t.Logf("attempt %d: expected %d active observers, got %d", retries, quorumSize, activeCount)
-		}
+
 		time.Sleep(200 * time.Millisecond)
 	}
-	if verifyErr != nil {
-		t.Fatalf("failed to verify observers: %v", verifyErr)
-	}
-	if activeCount != quorumSize {
-		t.Errorf("expected %d active observers, got %d", quorumSize, activeCount)
+
+	if err != nil {
+		tc.t.Fatalf("failed to verify observers: %v", err)
 	}
 
-	// Start heartbeat updates
+	if activeCount != tc.quorumSize {
+		tc.t.Errorf("expected %d active observers, got %d", tc.quorumSize, activeCount)
+	}
+}
+
+func (tc *quorumTestContext) runHeartbeats(ctx context.Context, manager *Manager) {
 	heartbeatCtx, stopHeartbeats := context.WithCancel(ctx)
 
 	var heartbeatWg sync.WaitGroup
 
-	// Start heartbeats for each observer
-	for i := 1; i <= quorumSize; i++ {
-		nodeID := fmt.Sprintf("test-node-%d", i)
-
-		heartbeatWg.Add(1)
-
-		go func(nodeId string) {
-			defer heartbeatWg.Done()
-
-			ticker := time.NewTicker(200 * time.Millisecond)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-heartbeatCtx.Done():
-					return
-				case <-ticker.C:
-					if err := manager.UpdateHeartbeat(ctx, nodeId); err != nil {
-						if !errors.Is(err, context.Canceled) {
-							t.Logf("heartbeat update failed for %s: %v", nodeId, err)
-						}
-					}
-				}
-			}
-		}(nodeID)
-	}
-
-	// Wait for heartbeats to establish
+	tc.startObserverHeartbeats(heartbeatCtx, manager, &heartbeatWg)
 	time.Sleep(2 * time.Second)
+	tc.verifyInitialObservers(ctx, manager)
 
-	// Verify initial active observers
-	activeCount, err = manager.GetActiveObservers(ctx)
-	if err != nil {
-		t.Fatalf("failed to get active observers: %v", err)
-	}
-
-	if activeCount != quorumSize {
-		t.Errorf("expected %d active observers, got %d", quorumSize, activeCount)
-	}
-
-	// Stop all heartbeats
 	stopHeartbeats()
 	heartbeatWg.Wait()
+}
 
-	// Get lock info and mark nodes as inactive
-	lockInfo, err := manager.GetLockInfo(ctx)
+func (tc *quorumTestContext) startObserverHeartbeats(ctx context.Context, manager *Manager, wGroup *sync.WaitGroup) {
+	for i := 1; i <= tc.quorumSize; i++ {
+		nodeID := fmt.Sprintf("test-node-%d", i)
+
+		wGroup.Add(1)
+
+		go tc.runObserverHeartbeat(ctx, manager, nodeID, wGroup)
+	}
+}
+
+func (tc *quorumTestContext) runObserverHeartbeat(ctx context.Context, manager *Manager,
+	nodeID string, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := manager.UpdateHeartbeat(ctx, nodeID); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					tc.t.Logf("heartbeat update failed for %s: %v", nodeID, err)
+				}
+			}
+		}
+	}
+}
+
+func (tc *quorumTestContext) verifyInitialObservers(ctx context.Context, manager *Manager) {
+	activeCount, err := manager.GetActiveObservers(ctx)
 	if err != nil {
-		t.Fatalf("failed to get lock info: %v", err)
+		tc.t.Fatalf("failed to get active observers: %v", err)
 	}
 
-	// Mark all observers as inactive with old heartbeats
+	if activeCount != tc.quorumSize {
+		tc.t.Errorf("expected %d active observers, got %d", tc.quorumSize, activeCount)
+	}
+}
+
+func (tc *quorumTestContext) simulateQuorumLoss(ctx context.Context, manager *Manager) {
+	lockInfo := tc.getLockInfo(ctx, manager)
+	tc.markObserversInactive(lockInfo)
+	tc.updateLockWithInactiveObservers(ctx, lockInfo)
+	tc.waitForDemotion(ctx, manager)
+}
+
+func (tc *quorumTestContext) getLockInfo(ctx context.Context, manager *Manager) *LockInfo {
+	lockInfo, err := manager.GetLockInfo(ctx)
+	if err != nil {
+		tc.t.Fatalf("failed to get lock info: %v", err)
+	}
+
+	return lockInfo
+}
+
+func (tc *quorumTestContext) markObserversInactive(lockInfo *LockInfo) {
 	veryOldTime := time.Now().Add(-60 * time.Second)
 
 	for nodeID := range lockInfo.Observers {
@@ -703,34 +752,31 @@ func TestQuorum(t *testing.T) {
 		observer.IsActive = false
 		lockInfo.Observers[nodeID] = observer
 	}
+}
 
-	// Update lock with inactive observers
+func (tc *quorumTestContext) updateLockWithInactiveObservers(ctx context.Context, lockInfo *LockInfo) {
 	lockData, err := json.Marshal(lockInfo)
 	if err != nil {
-		t.Fatalf("failed to marshal lock info: %v", err)
+		tc.t.Fatalf("failed to marshal lock info: %v", err)
 	}
 
-	_, err = mockS3.PutObject(ctx, &s3.PutObjectInput{
+	_, err = tc.mockS3.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String("test-bucket"),
 		Key:         aws.String("locks/leader"),
 		Body:        bytes.NewReader(lockData),
 		ContentType: aws.String("application/json"),
 	})
 	if err != nil {
-		t.Fatalf("failed to update lock info: %v", err)
+		tc.t.Fatalf("failed to update lock info: %v", err)
 	}
+}
 
-	// Wait for demotion
+func (tc *quorumTestContext) waitForDemotion(ctx context.Context, manager *Manager) {
 	select {
-	case <-demoted:
+	case <-tc.demoted:
 		log.Printf("DEBUG: Leader successfully demoted after losing quorum")
 	case <-time.After(3 * time.Second):
-		// Check active observers for debugging
-		activeCount, _ = manager.GetActiveObservers(ctx)
-		t.Fatalf("leader failed to step down after losing quorum (active observers: %d)", activeCount)
+		activeCount, _ := manager.GetActiveObservers(ctx)
+		tc.t.Fatalf("leader failed to step down after losing quorum (active observers: %d)", activeCount)
 	}
-
-	// Cleanup and wait for everything to complete
-	cancel()
-	wGroup.Wait()
 }
