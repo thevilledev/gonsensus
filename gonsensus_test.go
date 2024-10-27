@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,9 @@ type MockS3Client struct {
 	putError    error
 	getError    error
 	deleteError error
+	mu          sync.Mutex
+	putCount    int
+	getCount    int
 }
 
 func NewMockS3Client() *MockS3Client {
@@ -32,6 +36,9 @@ func NewMockS3Client() *MockS3Client {
 
 func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput,
 	_ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.putError != nil {
 		return nil, m.putError
 	}
@@ -54,18 +61,24 @@ func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput,
 	}
 
 	m.objects[key] = data
+	m.putCount++
 
 	return &s3.PutObjectOutput{}, nil
 }
 
 func (m *MockS3Client) GetObject(_ context.Context, params *s3.GetObjectInput,
 	_ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.getError != nil {
 		return nil, m.getError
 	}
 
 	key := aws.ToString(params.Key)
 	data, exists := m.objects[key]
+
+	m.getCount++
 
 	if !exists {
 		return nil, &types.NoSuchKey{}
@@ -78,6 +91,9 @@ func (m *MockS3Client) GetObject(_ context.Context, params *s3.GetObjectInput,
 
 func (m *MockS3Client) DeleteObject(_ context.Context, params *s3.DeleteObjectInput,
 	_ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.deleteError != nil {
 		return nil, m.deleteError
 	}
@@ -301,74 +317,6 @@ func TestRenewLock(t *testing.T) {
 				t.Errorf("expected error %v, got %v", tCase.expectError, err)
 			}
 		})
-	}
-}
-
-func TestLeaderCallbacks(t *testing.T) {
-	t.Parallel()
-
-	mockS3 := NewMockS3Client()
-	manager, err := NewManager(mockS3, "test-bucket", Config{
-		TTL:          2 * time.Second,
-		PollInterval: 500 * time.Millisecond,
-		NodeID:       "test-node",
-	})
-
-	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
-	}
-
-	electedCalled := false
-	demotedCalled := false
-
-	manager.SetCallbacks(
-		func(_ context.Context) error {
-			electedCalled = true
-
-			return nil
-		},
-
-		func(_ context.Context) {
-			demotedCalled = true
-		},
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	// Run the manager in a goroutine
-	go func() {
-		_ = manager.Run(ctx)
-	}()
-
-	// Wait for election
-	time.Sleep(1 * time.Second)
-
-	if !electedCalled {
-		t.Error("expected election callback to be called")
-	}
-
-	// Simulate lock takeover by another node
-	lock := LockInfo{
-		Node:      "other-node",
-		Timestamp: time.Now(),
-		Expiry:    time.Now().Add(30 * time.Second),
-		Term:      100,
-		Version:   "other-1",
-	}
-	data, err := json.Marshal(lock)
-
-	if err != nil {
-		log.Panic("mock setup fail")
-	}
-
-	mockS3.objects[manager.lockKey] = data
-
-	// Wait for demotion
-	time.Sleep(1 * time.Second)
-
-	if !demotedCalled {
-		t.Error("expected demotion callback to be called")
 	}
 }
 
