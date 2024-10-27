@@ -70,8 +70,8 @@ type Manager struct {
 
 	lease *Lease
 
-	requireQuorum bool
-	quorum        *QuorumChecker
+	requireQuorum     bool
+	requiredObservers int
 
 	gracePeriod time.Duration
 }
@@ -121,16 +121,16 @@ func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 	}
 
 	return &Manager{
-		s3Client:      client,
-		bucket:        bucket,
-		nodeID:        nodeID,
-		lockKey:       lockPrefix + "leader",
-		ttl:           cfg.TTL,
-		pollInterval:  cfg.PollInterval,
-		lease:         NewLease(),
-		requireQuorum: cfg.RequireQuorum,
-		gracePeriod:   cfg.GracePeriod,
-		quorum:        NewQuorumChecker(cfg.QuorumSize),
+		s3Client:          client,
+		bucket:            bucket,
+		nodeID:            nodeID,
+		lockKey:           lockPrefix + "leader",
+		ttl:               cfg.TTL,
+		pollInterval:      cfg.PollInterval,
+		lease:             NewLease(),
+		requireQuorum:     cfg.RequireQuorum,
+		gracePeriod:       cfg.GracePeriod,
+		requiredObservers: cfg.QuorumSize,
 	}, nil
 }
 
@@ -829,28 +829,10 @@ func isAWSErrorCode(err error, code string) bool {
 	return false
 }
 
-// Add quorum checking for extra safety
-type QuorumChecker struct {
-	mu                sync.RWMutex
-	observers         map[string]time.Time // Map of observer nodes and their last heartbeat
-	requiredObservers int
-}
-
-func NewQuorumChecker(requiredObservers int) *QuorumChecker {
-	return &QuorumChecker{
-		observers:         make(map[string]time.Time),
-		requiredObservers: requiredObservers,
-	}
-}
-
 // Modified the Manager's verifyQuorum method for more aggressive checking
 func (m *Manager) verifyQuorum(ctx context.Context) bool {
 	if !m.requireQuorum {
 		return true // Always return true if quorum checking is disabled
-	}
-
-	if m.quorum == nil {
-		return false
 	}
 
 	lockInfo, err := m.GetLockInfo(ctx)
@@ -874,9 +856,9 @@ func (m *Manager) verifyQuorum(ctx context.Context) bool {
 		}
 	}
 
-	hasQuorum := activeCount >= m.quorum.requiredObservers
+	hasQuorum := activeCount >= m.requiredObservers
 	log.Printf("DEBUG: Quorum check - Active: %d, Required: %d, Has Quorum: %v",
-		activeCount, m.quorum.requiredObservers, hasQuorum)
+		activeCount, m.requiredObservers, hasQuorum)
 
 	return hasQuorum
 }
