@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"sync"
@@ -534,4 +535,171 @@ func TestLeaderCallbacks(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestQuorum(t *testing.T) {
+	t.Parallel()
+
+	mockS3 := NewMockS3Client()
+	quorumSize := 3
+
+	elected := make(chan struct{}, 1)
+	demoted := make(chan struct{}, 1)
+
+	manager, err := NewManager(mockS3, "test-bucket", Config{
+		TTL:           2 * time.Second,
+		PollInterval:  500 * time.Millisecond,
+		NodeID:        "test-node-1",
+		LockPrefix:    "locks/",
+		RequireQuorum: true,
+		QuorumSize:    quorumSize,
+	})
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+
+	manager.SetCallbacks(
+		func(_ context.Context) error {
+			elected <- struct{}{}
+			return nil
+		},
+		func(_ context.Context) {
+			demoted <- struct{}{}
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Start leadership monitoring in background
+	var wGroup sync.WaitGroup
+	wGroup.Add(1)
+	go func() {
+		defer wGroup.Done()
+		err := manager.Run(ctx)
+		if err != nil && !errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) &&
+			!errors.Is(err, ErrLostQuorum) {
+			t.Errorf("unexpected error from Run: %v", err)
+		}
+	}()
+
+	// Wait for leader election
+	select {
+	case <-elected:
+		log.Printf("DEBUG: Leader elected, proceeding with test")
+	case <-time.After(3 * time.Second):
+		t.Fatal("leader election timed out")
+	}
+
+	// Register observers after leader election
+	for i := 1; i <= quorumSize; i++ {
+		nodeID := fmt.Sprintf("test-node-%d", i)
+		if err := manager.RegisterObserver(ctx, nodeID, nil); err != nil {
+			t.Fatalf("failed to register observer %s: %v", nodeID, err)
+		}
+	}
+
+	// Verify observers were registered
+	for i := 0; i < 10; i++ { // Retry a few times to handle eventual consistency
+		activeCount, err := manager.GetActiveObservers(ctx)
+		if err != nil {
+			t.Logf("failed to get active observers: %v", err)
+		} else if activeCount == quorumSize {
+			break
+		}
+		if i == 9 {
+			t.Fatalf("failed to verify observer registration after retries")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Start heartbeat updates
+	heartbeatCtx, stopHeartbeats := context.WithCancel(ctx)
+	var heartbeatWg sync.WaitGroup
+
+	// Start heartbeats for each observer
+	for i := 1; i <= quorumSize; i++ {
+		nodeID := fmt.Sprintf("test-node-%d", i)
+		heartbeatWg.Add(1)
+		go func(id string) {
+			defer heartbeatWg.Done()
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-heartbeatCtx.Done():
+					return
+				case <-ticker.C:
+					if err := manager.UpdateHeartbeat(ctx, id); err != nil {
+						if !errors.Is(err, context.Canceled) {
+							t.Logf("heartbeat update failed for %s: %v", id, err)
+						}
+					}
+				}
+			}
+		}(nodeID)
+	}
+
+	// Wait for heartbeats to establish
+	time.Sleep(2 * time.Second)
+
+	// Verify initial active observers
+	activeCount, err := manager.GetActiveObservers(ctx)
+	if err != nil {
+		t.Fatalf("failed to get active observers: %v", err)
+	}
+	if activeCount != quorumSize {
+		t.Errorf("expected %d active observers, got %d", quorumSize, activeCount)
+	}
+
+	// Stop all heartbeats
+	stopHeartbeats()
+	heartbeatWg.Wait()
+
+	// Get lock info and mark nodes as inactive
+	lockInfo, err := manager.GetLockInfo(ctx)
+	if err != nil {
+		t.Fatalf("failed to get lock info: %v", err)
+	}
+
+	// Mark all observers as inactive with old heartbeats
+	veryOldTime := time.Now().Add(-30 * time.Second)
+	for nodeID := range lockInfo.Observers {
+		observer := lockInfo.Observers[nodeID]
+		observer.LastHeartbeat = veryOldTime
+		observer.IsActive = false
+		lockInfo.Observers[nodeID] = observer
+	}
+
+	// Update lock with inactive observers
+	lockData, err := json.Marshal(lockInfo)
+	if err != nil {
+		t.Fatalf("failed to marshal lock info: %v", err)
+	}
+
+	_, err = mockS3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String("test-bucket"),
+		Key:         aws.String("locks/leader"),
+		Body:        bytes.NewReader(lockData),
+		ContentType: aws.String("application/json"),
+	})
+	if err != nil {
+		t.Fatalf("failed to update lock info: %v", err)
+	}
+
+	// Wait for demotion
+	select {
+	case <-demoted:
+		log.Printf("DEBUG: Leader successfully demoted after losing quorum")
+	case <-time.After(3 * time.Second):
+		// Check active observers for debugging
+		activeCount, _ = manager.GetActiveObservers(ctx)
+		t.Fatalf("leader failed to step down after losing quorum (active observers: %d)", activeCount)
+	}
+
+	// Cleanup and wait for everything to complete
+	cancel()
+	wGroup.Wait()
 }
