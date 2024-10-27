@@ -18,6 +18,8 @@ import (
 	"github.com/aws/smithy-go"
 )
 
+var ErrFailedToVerifyObserverCount = errors.New("failed to verify observer count after retries")
+
 var (
 	errSimulated = errors.New("simulated error")
 )
@@ -748,39 +750,44 @@ func (tc *quorumTestContext) waitForDemotion(ctx context.Context, manager *Manag
 
 func (tc *quorumTestContext) registerAndVerifyObservers(ctx context.Context, manager *Manager) error {
 	// Register observers one at a time with verification
-	for i := 1; i <= tc.quorumSize; i++ {
-		nodeID := fmt.Sprintf("test-node-%d", i)
+	for iter := 1; iter <= tc.quorumSize; iter++ {
+		nodeID := fmt.Sprintf("test-node-%d", iter)
 
 		// Register with retry
 		if err := tc.registerObserverWithRetry(ctx, manager, nodeID); err != nil {
-			return fmt.Errorf("failed to register observer %s: %v", nodeID, err)
+			return fmt.Errorf("%w: %s", ErrFailedToRegisterObserver, nodeID)
 		}
 
 		// Verify after each registration
-		if err := tc.verifyObserverCount(ctx, manager, i); err != nil {
-			return fmt.Errorf("failed to verify observer count after registering %s: %v", nodeID, err)
+		if err := tc.verifyObserverCount(ctx, manager, iter); err != nil {
+			return fmt.Errorf("%w: failed to verify observer count after registering %s", err, nodeID)
 		}
 
 		// Add delay between registrations
 		time.Sleep(500 * time.Millisecond)
 	}
+
 	return nil
 }
 
 func (tc *quorumTestContext) verifyObserverCount(ctx context.Context, manager *Manager, expectedCount int) error {
 	// Retry verification multiple times
-	for i := 0; i < 10; i++ {
+	for iter := range 10 {
 		activeCount, err := manager.GetActiveObservers(ctx)
 		if err == nil && activeCount == expectedCount {
 			tc.t.Logf("Successfully verified %d observers", activeCount)
+
 			return nil
 		}
+
 		if err != nil {
-			tc.t.Logf("Retry %d: Error getting active observers: %v", i, err)
+			tc.t.Logf("Retry %d: Error getting active observers: %v", iter, err)
 		} else {
-			tc.t.Logf("Retry %d: Expected %d observers, got %d", i, expectedCount, activeCount)
+			tc.t.Logf("Retry %d: Expected %d observers, got %d", iter, expectedCount, activeCount)
 		}
+
 		time.Sleep(200 * time.Millisecond)
 	}
-	return fmt.Errorf("failed to verify observer count after retries")
+
+	return fmt.Errorf("%w", ErrFailedToVerifyObserverCount)
 }
