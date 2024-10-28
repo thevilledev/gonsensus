@@ -12,7 +12,7 @@ type LockInfo struct {
 	Version         string                  `json:"version"`
 	FenceToken      int64                   `json:"fenceToken"`
 	LastKnownLeader string                  `json:"lastKnownLeader"`
-	Observers       map[string]ObserverInfo `json:"observers"`
+	Observers       map[string]observerInfo `json:"observers"`
 }
 
 // IsExpired checks if a lock is expired.

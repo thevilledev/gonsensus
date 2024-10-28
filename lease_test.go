@@ -71,7 +71,7 @@ func TestLease_UpdateLease(t *testing.T) {
 				Version:   "v3",
 				Timestamp: time.Now(),
 				Term:      3,
-				Observers: map[string]ObserverInfo{
+				Observers: map[string]observerInfo{
 					"observer1": {
 						LastHeartbeat: time.Now(),
 						IsActive:      true,
@@ -83,7 +83,7 @@ func TestLease_UpdateLease(t *testing.T) {
 				Version:   "v3",
 				Timestamp: time.Now(),
 				Term:      3,
-				Observers: map[string]ObserverInfo{
+				Observers: map[string]observerInfo{
 					"observer1": {
 						LastHeartbeat: time.Now(),
 						IsActive:      true,
