@@ -79,10 +79,6 @@ func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 		cfg.QuorumSize = defaultQuorumSize
 	}
 
-	if cfg.RequireQuorum && cfg.QuorumSize < 1 {
-		return nil, fmt.Errorf("%w: quorum size must be at least 1", ErrInvalidConfig)
-	}
-
 	return &Manager{
 		s3Client:          client,
 		bucket:            bucket,
