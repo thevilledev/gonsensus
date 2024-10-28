@@ -59,7 +59,10 @@ func (s *leaderState) handleElection(ctx context.Context) error {
 }
 
 func (s *leaderState) handleDemotion(ctx context.Context) {
-	if s.getIsLeader() && s.manager.onDemoted != nil {
+	// Get current state before demotion
+	wasLeader := s.getIsLeader()
+
+	if wasLeader && s.manager.onDemoted != nil {
 		s.manager.onDemoted(ctx)
 	}
 
