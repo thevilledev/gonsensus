@@ -165,3 +165,205 @@ func TestLeaderCallbacks(t *testing.T) {
 		})
 	}
 }
+
+func setupTestManager() *Manager {
+	return &Manager{
+		s3Client:          NewMockS3Client(),
+		bucket:            "test-bucket",
+		lockKey:           "test-lock",
+		ttl:               time.Second,
+		nodeID:            "test-node",
+		lease:             NewLease(), // Important: Initialize the lease
+		onElected:         func(context.Context) error { return nil },
+		onDemoted:         func(context.Context) {},
+		requireQuorum:     true,
+		requiredObservers: 3,
+	}
+}
+
+func TestLeaderState_RaceConditions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		fn   func(*testing.T, *leaderState)
+	}{
+		{
+			name: "concurrent leader state changes",
+			fn:   testConcurrentLeaderStateChanges,
+		},
+		{
+			name: "concurrent maintenance and demotion",
+			fn:   testConcurrentMaintenanceAndDemotion,
+		},
+		{
+			name: "concurrent election attempts",
+			fn:   testConcurrentElectionAttempts,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := &leaderState{
+				manager: setupTestManager(),
+			}
+			testCase.fn(t, state)
+		})
+	}
+}
+
+func testConcurrentLeaderStateChanges(t *testing.T, state *leaderState) {
+	t.Helper()
+
+	var wGroup sync.WaitGroup
+
+	iterations := 100 // Reduced for faster tests
+
+	// Multiple goroutines changing leader state
+	for range 5 {
+		wGroup.Add(1)
+
+		go func() {
+			defer wGroup.Done()
+
+			for range iterations {
+				state.setLeader(true)
+				_ = state.getIsLeader()
+				state.setLeader(false)
+			}
+		}()
+	}
+
+	// Multiple goroutines reading leader state
+	for range 5 {
+		wGroup.Add(1)
+
+		go func() {
+			defer wGroup.Done()
+
+			for range iterations {
+				_ = state.getIsLeader()
+			}
+		}()
+	}
+
+	wGroup.Wait()
+}
+
+func testConcurrentMaintenanceAndDemotion(t *testing.T, state *leaderState) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	var wGroup sync.WaitGroup
+
+	wGroup.Add(2)
+
+	// Start maintenance loop
+	go func() {
+		defer wGroup.Done()
+		state.setLeader(true)
+		_ = state.runLeaderMaintenance(ctx)
+	}()
+
+	// Concurrent demotions
+	go func() {
+		defer wGroup.Done()
+
+		ticker := time.NewTicker(10 * time.Millisecond)
+
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				state.handleDemotion(ctx)
+			}
+		}
+	}()
+
+	wGroup.Wait()
+}
+
+func testConcurrentElectionAttempts(t *testing.T, state *leaderState) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	var wGroup sync.WaitGroup
+
+	iterations := 10 // Reduced for faster tests
+
+	// Multiple goroutines trying to become leader
+	for range 5 {
+		wGroup.Add(1)
+
+		go func() {
+			defer wGroup.Done()
+
+			for range iterations {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					_ = state.tryBecomeLeader(ctx)
+
+					time.Sleep(time.Millisecond) // Add small delay to reduce contention
+				}
+			}
+		}()
+	}
+
+	// Concurrent state checks
+	wGroup.Add(1)
+
+	go func() {
+		defer wGroup.Done()
+
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = state.getIsLeader()
+			}
+		}
+	}()
+
+	wGroup.Wait()
+}
+
+// Additional helper test to verify basic functionality.
+func TestLeaderState_BasicOperations(t *testing.T) {
+	t.Parallel()
+
+	state := &leaderState{
+		manager: setupTestManager(),
+	}
+
+	// Test basic leader state changes
+	if state.getIsLeader() {
+		t.Error("Expected initial state to be not leader")
+	}
+
+	state.setLeader(true)
+
+	if !state.getIsLeader() {
+		t.Error("Expected state to be leader after setting")
+	}
+
+	state.setLeader(false)
+
+	if state.getIsLeader() {
+		t.Error("Expected state to not be leader after unsetting")
+	}
+}

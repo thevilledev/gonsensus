@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -11,16 +12,17 @@ import (
 type leaderState struct {
 	manager  *Manager
 	isLeader bool
+	mu       sync.RWMutex // Add mutex for state protection
 }
 
 func (s *leaderState) runLeaderLoop(ctx context.Context) error {
-	if !s.isLeader {
+	if !s.getIsLeader() {
 		if err := s.tryBecomeLeader(ctx); err != nil {
 			return err
 		}
 	}
 
-	if s.isLeader {
+	if s.getIsLeader() {
 		return s.runLeaderMaintenance(ctx)
 	}
 
@@ -37,7 +39,7 @@ func (s *leaderState) tryBecomeLeader(ctx context.Context) error {
 		return nil
 	}
 
-	s.isLeader = true
+	s.setLeader(true)
 
 	return s.handleElection(ctx)
 }
@@ -50,25 +52,28 @@ func (s *leaderState) handleElection(ctx context.Context) error {
 	if err := s.manager.onElected(ctx); err != nil {
 		log.Printf("Error in leader callback: %v\n", err)
 
-		s.isLeader = false
+		s.setLeader(false)
 	}
 
 	return nil
 }
 
 func (s *leaderState) handleDemotion(ctx context.Context) {
-	if s.isLeader && s.manager.onDemoted != nil {
+	// Get current state before demotion
+	wasLeader := s.getIsLeader()
+
+	if wasLeader && s.manager.onDemoted != nil {
 		s.manager.onDemoted(ctx)
 	}
 
-	s.isLeader = false
+	s.setLeader(false)
 }
 
 func (s *leaderState) runLeaderMaintenance(ctx context.Context) error {
 	ticker := time.NewTicker(s.manager.ttl / retryIntervalDivider)
 	defer ticker.Stop()
 
-	for s.isLeader {
+	for s.getIsLeader() {
 		select {
 		case <-ctx.Done():
 			s.handleDemotion(ctx)
@@ -103,4 +108,17 @@ func (s *leaderState) renewLeadership(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *leaderState) setLeader(isLeader bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.isLeader = isLeader
+}
+
+func (s *leaderState) getIsLeader() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.isLeader
 }
