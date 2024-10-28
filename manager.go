@@ -39,6 +39,12 @@ type Manager struct {
 	gracePeriod time.Duration
 }
 
+type observerInfo struct {
+	LastHeartbeat time.Time         `json:"lastHeartbeat"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	IsActive      bool              `json:"isActive"`
+}
+
 func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 	if client == nil {
 		return nil, fmt.Errorf("%w: S3 client is required", ErrInvalidConfig)
@@ -140,7 +146,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 	// Create new fence token and last known leader
 	lastKnownLeader := ""
 	newFenceToken := int64(0)
-	existingObservers := make(map[string]ObserverInfo)
+	existingObservers := make(map[string]observerInfo)
 
 	if currentLock != nil {
 		newFenceToken = currentLock.FenceToken + 1
@@ -473,19 +479,19 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 
 		// Initialize or copy observers map
 		if lockInfo.Observers == nil {
-			newLockInfo.Observers = make(map[string]ObserverInfo)
+			newLockInfo.Observers = make(map[string]observerInfo)
 
 			log.Printf("DEBUG: Initializing new observers map for lock")
 		} else {
 			// Deep copy existing observers
-			newLockInfo.Observers = make(map[string]ObserverInfo, len(lockInfo.Observers))
+			newLockInfo.Observers = make(map[string]observerInfo, len(lockInfo.Observers))
 			for k, v := range lockInfo.Observers {
 				newLockInfo.Observers[k] = v
 			}
 		}
 
 		// Update observer info
-		newLockInfo.Observers[nodeID] = ObserverInfo{
+		newLockInfo.Observers[nodeID] = observerInfo{
 			LastHeartbeat: time.Now(),
 			Metadata:      metadata,
 			IsActive:      true,
