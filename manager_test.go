@@ -33,6 +33,20 @@ func TestNewManager(t *testing.T) {
 			cfg:         Config{},
 			expectError: true,
 		},
+		{
+			name:        "Quorum size is 0 and quorum is required",
+			client:      NewMockS3Client(),
+			bucket:      "test-bucket",
+			cfg:         Config{QuorumSize: 0, RequireQuorum: true},
+			expectError: false,
+		},
+		{
+			name:        "Quorum size is 0 and quorum is not required",
+			client:      NewMockS3Client(),
+			bucket:      "test-bucket",
+			cfg:         Config{QuorumSize: 0, RequireQuorum: false},
+			expectError: false,
+		},
 	}
 
 	for _, tCase := range tests {
