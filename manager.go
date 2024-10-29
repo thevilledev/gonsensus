@@ -371,7 +371,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 
 	// Initialize self-registration after acquiring lock
-	selfRegistered := !(m.quorumSize > 0) // if quorum not required, consider self registered
+	selfRegistered := m.quorumSize <= 1 // if quorum not required, consider self registered
 
 	for {
 		select {
@@ -391,7 +391,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			}
 
 			// If we're the leader and need quorum but haven't registered, do it now
-			if leaderState.isLeader && m.quorumSize > 0 && !selfRegistered {
+			if leaderState.isLeader && !selfRegistered {
 				if err := m.RegisterObserver(ctx, m.nodeID, nil); err != nil {
 					return fmt.Errorf("failed to register self as observer: %w", err)
 				}
@@ -639,7 +639,7 @@ func (m *Manager) GetActiveObservers(ctx context.Context) (int, error) {
 
 // Modified the Manager's verifyQuorum method for more aggressive checking.
 func (m *Manager) verifyQuorum(ctx context.Context) bool {
-	if !(m.quorumSize > 0) {
+	if m.quorumSize <= 1 {
 		return true // Always return true if quorum checking is disabled
 	}
 

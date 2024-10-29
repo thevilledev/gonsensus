@@ -81,7 +81,7 @@ func (s *leaderState) runLeaderMaintenance(ctx context.Context) error {
 			return ctx.Err()
 
 		case <-ticker.C:
-			if s.manager.quorumSize > 0 {
+			if s.manager.quorumSize > 1 {
 				if !s.manager.verifyQuorum(ctx) {
 					log.Printf("Lost quorum, stepping down")
 					s.handleDemotion(ctx)
