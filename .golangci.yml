@@ -1,6 +1,10 @@
 issues:
   exclude-files:
     - example_test.go
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
 
 linters:
   tests-disable-all: true
@@ -132,6 +136,8 @@ linters:
   fast: true
 
 linters-settings:
+  gocyclo:
+      min-complexity: 10
   depguard:
     rules:
       main:
