@@ -6,7 +6,9 @@
 
 **Gonsensus** is a distributed consensus implementation, written in Go, using S3 conditional operations for leader election. It provides a simple, reliable way to coordinate distributed systems using *any* S3 compatible object storage as the backing store. Conditional writes are required. See [RFC 7232](https://datatracker.ietf.org/doc/html/rfc7232) for more details about conditional requests in general.
 
-See [example_test.go](example_test.go) for a fully fledged example use case.
+See [example_test.go](example_test.go) for a fully fledged example use case for simple leader election.
+
+See [integration_test.go](integration/integration_test.go) for an example use case for leader election with quorum.
 
 ## Features
 
