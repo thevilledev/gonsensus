@@ -180,7 +180,7 @@ func (tc *quorumTestContext) simulateQuorumLoss(ctx context.Context, manager *Ma
 func (tc *quorumTestContext) getLockInfo(ctx context.Context, manager *Manager) *LockInfo {
 	lockInfo, err := manager.GetLockInfo(ctx)
 	if err != nil {
-		tc.t.Fatalf("failed to get lock info: %v", err)
+		tc.t.Fatalf("%s: %v", ErrFailedToGetLockInfo, err)
 	}
 
 	return lockInfo
@@ -200,14 +200,14 @@ func (tc *quorumTestContext) markObserversInactive(lockInfo *LockInfo) {
 func (tc *quorumTestContext) updateLockWithInactiveObservers(ctx context.Context, lockInfo *LockInfo) {
 	lockData, err := json.Marshal(lockInfo)
 	if err != nil {
-		tc.t.Fatalf("failed to marshal lock info: %v", err)
+		tc.t.Fatalf("%s: %v", ErrFailedToMarshalLockInfo, err)
 	}
 
 	_, err = tc.mockS3.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String("test-bucket"),
 		Key:         aws.String("locks/leader"),
 		Body:        bytes.NewReader(lockData),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(jsonContentType),
 	})
 	if err != nil {
 		tc.t.Fatalf("failed to update lock info: %v", err)

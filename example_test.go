@@ -62,7 +62,7 @@ func Example() {
 	// Get current leader info
 	lockInfo, err := manager.GetLockInfo(ctx)
 	if err != nil {
-		fmt.Printf("Failed to get lock info: %v\n", err)
+		fmt.Printf("%s: %v\n", gonsensus.ErrFailedToGetLockInfo, err)
 		return
 	}
 

@@ -19,6 +19,8 @@ var (
 	ErrNoObserversRegistered    = errors.New("no observers registered")
 	ErrFailedToUpdateHeartbeat  = errors.New("failed to update heartbeat")
 	ErrFailedToRegisterObserver = errors.New("failed to register observer")
+	ErrFailedToMarshalLockInfo  = errors.New("failed to marshal lock info")
+	ErrFailedToGetLockInfo      = errors.New("failed to get lock info")
 )
 
 const (
@@ -28,6 +30,8 @@ const (
 	defaultGracePeriodDivider = 10 // 1/10 of set TTL
 	defaultHeartbeatDivider   = 3  // 1/3 of set TTL
 	defaultQuorumSize         = 3
+
+	jsonContentType = "application/json"
 )
 
 // S3Client defines the interface for S3 operations.
