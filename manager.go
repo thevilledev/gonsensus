@@ -258,7 +258,29 @@ func (m *Manager) cleanupAttempt(ctx context.Context, attemptKey string) {
 
 // renewLock attempts to update the lock using atomic operations.
 func (m *Manager) renewLock(ctx context.Context) error {
-	// First get current state
+	// Get and validate current lock
+	currentLock, err := m.getCurrentLockForRenewal(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Verify and update lease
+	if err := m.verifyAndUpdateLease(currentLock); err != nil {
+		return err
+	}
+
+	// Create new lock info
+	newLock := m.prepareRenewalLockInfo(currentLock)
+
+	// Attempt renewal
+	if err := m.attemptLockRenewal(ctx, newLock); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (m *Manager) getCurrentLockForRenewal(ctx context.Context) (*LockInfo, error) {
 	result, err := m.s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(m.bucket),
 		Key:    aws.String(m.lockKey),
@@ -266,100 +288,101 @@ func (m *Manager) renewLock(ctx context.Context) error {
 	if err != nil {
 		var noSuchKey *types.NoSuchKey
 		if errors.As(err, &noSuchKey) {
-			return ErrLockNotFound
+			return nil, ErrLockNotFound
 		}
 
-		return fmt.Errorf("failed to get current lock: %w", err)
+		return nil, fmt.Errorf("failed to get current lock: %w", err)
 	}
 	defer result.Body.Close()
 
 	var currentLock LockInfo
 	if err := json.NewDecoder(result.Body).Decode(&currentLock); err != nil {
-		return fmt.Errorf("failed to decode lock info: %w", err)
+		return nil, fmt.Errorf("failed to decode lock info: %w", err)
 	}
 
-	// Get current lease info
+	return &currentLock, nil
+}
+
+func (m *Manager) verifyAndUpdateLease(currentLock *LockInfo) error {
 	currentLease := m.lease.GetLeaseInfo()
 
-	// If we have a current lease, verify everything matches
 	if currentLease != nil {
 		if currentLock.Node != m.nodeID ||
 			currentLock.Term != currentLease.Term ||
 			currentLock.Version != currentLease.Version {
 			return ErrLockModified
 		}
-	} else {
-		// If we don't have a lease but the lock exists and belongs to us,
-		// adopt it (this handles the initial renewal case)
-		if currentLock.Node == m.nodeID && currentLock.Term == m.getCurrentTerm() {
-			m.lease.UpdateLease(&currentLock)
-		} else {
-			return ErrLockModified
-		}
+
+		return nil
 	}
 
-	// Create new lock info with updated timestamp and version
+	// Handle initial renewal case
+	if currentLock.Node == m.nodeID && currentLock.Term == m.getCurrentTerm() {
+		m.lease.UpdateLease(currentLock)
+
+		return nil
+	}
+
+	return ErrLockModified
+}
+
+func (m *Manager) prepareRenewalLockInfo(currentLock *LockInfo) LockInfo {
 	now := time.Now()
 	currentTerm := m.getCurrentTerm()
-	newVersion := fmt.Sprintf("%d-%s-%d", now.UnixNano(), m.nodeID, currentTerm)
-	newLock := LockInfo{
+
+	return LockInfo{
 		Node:      m.nodeID,
 		Timestamp: now,
 		Expiry:    now.Add(m.ttl),
 		Term:      currentTerm,
-		Version:   newVersion,
+		Version:   fmt.Sprintf("%d-%s-%d", now.UnixNano(), m.nodeID, currentTerm),
 		Observers: currentLock.Observers,
+		// Preserve other fields from current lock
+		FenceToken:      currentLock.FenceToken,
+		LastKnownLeader: currentLock.LastKnownLeader,
 	}
+}
 
+func (m *Manager) attemptLockRenewal(ctx context.Context, newLock LockInfo) error {
 	lockData, err := json.Marshal(newLock)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrFailedToMarshalLockInfo, err)
 	}
 
-	// Create a new key for the update
-	updateKey := fmt.Sprintf("%s.%s", m.lockKey, newVersion)
+	// Create temporary update key
+	updateKey := fmt.Sprintf("%s.%s", m.lockKey, newLock.Version)
 
-	// Attempt to create new version
-	input := &s3.PutObjectInput{
-		Bucket:      aws.String(m.bucket),
-		Key:         aws.String(updateKey),
-		Body:        bytes.NewReader(lockData),
-		ContentType: aws.String(jsonContentType),
-		IfNoneMatch: aws.String("*"), // Ensure atomic update
-	}
-
-	_, err = m.s3Client.PutObject(ctx, input)
-	if err != nil {
+	// Create new version atomically
+	if err := m.createLockAttempt(ctx, updateKey, newLock); err != nil {
 		return fmt.Errorf("failed to create new lock version: %w", err)
 	}
 
-	// Move new version to main lock key
-	input = &s3.PutObjectInput{
+	// Move to main lock key
+	if err := m.finalizeRenewal(ctx, lockData); err != nil {
+		m.cleanupAttempt(ctx, updateKey)
+
+		return err
+	}
+
+	// Update lease and cleanup
+	m.lease.UpdateLease(&newLock)
+	m.cleanupAttempt(ctx, updateKey)
+
+	return nil
+}
+
+func (m *Manager) finalizeRenewal(ctx context.Context, lockData []byte) error {
+	input := &s3.PutObjectInput{
 		Bucket:      aws.String(m.bucket),
 		Key:         aws.String(m.lockKey),
 		Body:        bytes.NewReader(lockData),
 		ContentType: aws.String(jsonContentType),
 	}
 
-	_, err = m.s3Client.PutObject(ctx, input)
+	_, err := m.s3Client.PutObject(ctx, input)
 	if err != nil {
-		// Clean up temporary key
-		_, _ = m.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(m.bucket),
-			Key:    aws.String(updateKey),
-		})
-
 		return fmt.Errorf("failed to update main lock: %w", err)
 	}
-
-	// Update lease information
-	m.lease.UpdateLease(&newLock)
-
-	// Clean up temporary key
-	_, _ = m.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(m.bucket),
-		Key:    aws.String(updateKey),
-	})
 
 	return nil
 }
