@@ -173,7 +173,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 
 	lockData, err := json.Marshal(lockInfo)
 	if err != nil {
-		return fmt.Errorf("failed to marshal lock info: %w", err)
+		return fmt.Errorf("%w: %w", ErrFailedToMarshalLockInfo, err)
 	}
 
 	// Create a new key with our attempt
@@ -184,7 +184,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 		Bucket:      aws.String(m.bucket),
 		Key:         aws.String(attemptKey),
 		Body:        bytes.NewReader(lockData),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(jsonContentType),
 		IfNoneMatch: aws.String("*"), // Ensure atomic creation
 	}
 
@@ -227,7 +227,7 @@ func (m *Manager) acquireLock(ctx context.Context) error {
 		Bucket:      aws.String(m.bucket),
 		Key:         aws.String(m.lockKey),
 		Body:        bytes.NewReader(lockData),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(jsonContentType),
 	}
 
 	_, err = m.s3Client.PutObject(ctx, input)
@@ -310,7 +310,7 @@ func (m *Manager) renewLock(ctx context.Context) error {
 
 	lockData, err := json.Marshal(newLock)
 	if err != nil {
-		return fmt.Errorf("failed to marshal lock info: %w", err)
+		return fmt.Errorf("%w: %w", ErrFailedToMarshalLockInfo, err)
 	}
 
 	// Create a new key for the update
@@ -321,7 +321,7 @@ func (m *Manager) renewLock(ctx context.Context) error {
 		Bucket:      aws.String(m.bucket),
 		Key:         aws.String(updateKey),
 		Body:        bytes.NewReader(lockData),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(jsonContentType),
 		IfNoneMatch: aws.String("*"), // Ensure atomic update
 	}
 
@@ -335,7 +335,7 @@ func (m *Manager) renewLock(ctx context.Context) error {
 		Bucket:      aws.String(m.bucket),
 		Key:         aws.String(m.lockKey),
 		Body:        bytes.NewReader(lockData),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(jsonContentType),
 	}
 
 	_, err = m.s3Client.PutObject(ctx, input)
@@ -430,7 +430,7 @@ func (m *Manager) GetLockInfo(ctx context.Context) (*LockInfo, error) {
 			return nil, ErrLockNotFound
 		}
 
-		return nil, fmt.Errorf("failed to get lock info: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedToGetLockInfo, err)
 	}
 	defer result.Body.Close()
 
@@ -503,7 +503,7 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 		// Marshal updated lock info
 		lockData, err := json.Marshal(newLockInfo)
 		if err != nil {
-			return fmt.Errorf("failed to marshal lock info: %w", err)
+			return fmt.Errorf("%w: %w", ErrFailedToMarshalLockInfo, err)
 		}
 
 		// Update S3 with new observer info while preserving lock
@@ -511,7 +511,7 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 			Bucket:      aws.String(m.bucket),
 			Key:         aws.String(m.lockKey),
 			Body:        bytes.NewReader(lockData),
-			ContentType: aws.String("application/json"),
+			ContentType: aws.String(jsonContentType),
 		}
 
 		_, err = m.s3Client.PutObject(ctx, input)
@@ -553,7 +553,7 @@ func (m *Manager) UpdateHeartbeat(ctx context.Context, nodeID string) error {
 		// Get current lock info
 		lockInfo, err := m.GetLockInfo(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get lock info: %w", err)
+			return fmt.Errorf("%w: %w", ErrFailedToGetLockInfo, err)
 		}
 
 		log.Printf("DEBUG: Updating heartbeat for %s, current lock - Node: %s, Term: %d, Observer count: %d",
@@ -580,7 +580,7 @@ func (m *Manager) UpdateHeartbeat(ctx context.Context, nodeID string) error {
 		// Marshal updated lock info
 		lockData, err := json.Marshal(lockInfo)
 		if err != nil {
-			return fmt.Errorf("failed to marshal lock info: %w", err)
+			return fmt.Errorf("%w: %w", ErrFailedToMarshalLockInfo, err)
 		}
 
 		// Update S3 while preserving lock
@@ -588,7 +588,7 @@ func (m *Manager) UpdateHeartbeat(ctx context.Context, nodeID string) error {
 			Bucket:      aws.String(m.bucket),
 			Key:         aws.String(m.lockKey),
 			Body:        bytes.NewReader(lockData),
-			ContentType: aws.String("application/json"),
+			ContentType: aws.String(jsonContentType),
 		}
 
 		_, err = m.s3Client.PutObject(ctx, input)
@@ -615,7 +615,7 @@ func (m *Manager) UpdateHeartbeat(ctx context.Context, nodeID string) error {
 func (m *Manager) GetActiveObservers(ctx context.Context) (int, error) {
 	lockInfo, err := m.GetLockInfo(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get lock info: %w", err)
+		return 0, fmt.Errorf("%w: %w", ErrFailedToGetLockInfo, err)
 	}
 
 	if lockInfo.Observers == nil {
