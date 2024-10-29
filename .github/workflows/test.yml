@@ -31,7 +31,7 @@ jobs:
       - name: Run tests
         run: make test
 
-  Acceptance Test:
+  Acceptance_Test:
     needs: Test
     runs-on: ubuntu-latest
     env:
@@ -53,8 +53,8 @@ jobs:
       - name: Run tests
         run: make test-acc
 
-  Quorum Integration Test:
-    needs: Acceptance Test
+  Quorum_Integration_Test:
+    needs: Acceptance_Test
     runs-on: ubuntu-latest
     env:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
