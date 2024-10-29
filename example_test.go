@@ -57,7 +57,7 @@ func Example() {
 	}()
 
 	// Simulate some work
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	// Get current leader info
 	lockInfo, err := manager.GetLockInfo(ctx)
