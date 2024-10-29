@@ -1,6 +1,7 @@
 issues:
   exclude-files:
     - example_test.go
+    - integration/**.go
   exclude-rules:
     - path: _test\.go
       linters:
