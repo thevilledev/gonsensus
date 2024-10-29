@@ -61,12 +61,11 @@ type quorumTestContext struct {
 
 func (tc *quorumTestContext) setupManager() *Manager {
 	manager, err := NewManager(tc.mockS3, "test-bucket", Config{
-		TTL:           2 * time.Second,
-		PollInterval:  500 * time.Millisecond,
-		NodeID:        "test-node-1",
-		LockPrefix:    "locks/",
-		RequireQuorum: true,
-		QuorumSize:    tc.quorumSize,
+		TTL:          2 * time.Second,
+		PollInterval: 500 * time.Millisecond,
+		NodeID:       "test-node-1",
+		LockPrefix:   "locks/",
+		QuorumSize:   tc.quorumSize,
 	})
 	if err != nil {
 		tc.t.Fatalf("failed to create manager: %v", err)

@@ -168,16 +168,15 @@ func TestLeaderCallbacks(t *testing.T) {
 
 func setupTestManager() *Manager {
 	return &Manager{
-		s3Client:          NewMockS3Client(),
-		bucket:            "test-bucket",
-		lockKey:           "test-lock",
-		ttl:               time.Second,
-		nodeID:            "test-node",
-		lease:             NewLease(), // Important: Initialize the lease
-		onElected:         func(context.Context) error { return nil },
-		onDemoted:         func(context.Context) {},
-		requireQuorum:     true,
-		requiredObservers: 3,
+		s3Client:   NewMockS3Client(),
+		bucket:     "test-bucket",
+		lockKey:    "test-lock",
+		ttl:        time.Second,
+		nodeID:     "test-node",
+		lease:      NewLease(), // Important: Initialize the lease
+		onElected:  func(context.Context) error { return nil },
+		onDemoted:  func(context.Context) {},
+		quorumSize: 3,
 	}
 }
 

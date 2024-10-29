@@ -33,8 +33,7 @@ type Manager struct {
 
 	lease *Lease
 
-	requireQuorum     bool
-	requiredObservers int
+	quorumSize int
 
 	gracePeriod time.Duration
 }
@@ -86,16 +85,15 @@ func NewManager(client S3Client, bucket string, cfg Config) (*Manager, error) {
 	}
 
 	return &Manager{
-		s3Client:          client,
-		bucket:            bucket,
-		nodeID:            nodeID,
-		lockKey:           lockPrefix + "leader",
-		ttl:               cfg.TTL,
-		pollInterval:      cfg.PollInterval,
-		lease:             NewLease(),
-		requireQuorum:     cfg.RequireQuorum,
-		gracePeriod:       cfg.GracePeriod,
-		requiredObservers: cfg.QuorumSize,
+		s3Client:     client,
+		bucket:       bucket,
+		nodeID:       nodeID,
+		lockKey:      lockPrefix + "leader",
+		ttl:          cfg.TTL,
+		pollInterval: cfg.PollInterval,
+		lease:        NewLease(),
+		gracePeriod:  cfg.GracePeriod,
+		quorumSize:   cfg.QuorumSize,
 	}, nil
 }
 
@@ -210,7 +208,7 @@ func (m *Manager) createLockAttempt(ctx context.Context, attemptKey string, lock
 		Bucket:      aws.String(m.bucket),
 		Key:         aws.String(attemptKey),
 		Body:        bytes.NewReader(lockData),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(jsonContentType),
 		IfNoneMatch: aws.String("*"),
 	}
 
@@ -240,7 +238,7 @@ func (m *Manager) verifyAndAcquireLock(ctx context.Context, lockInfo LockInfo, n
 		Bucket:      aws.String(m.bucket),
 		Key:         aws.String(m.lockKey),
 		Body:        bytes.NewReader(must(json.Marshal(lockInfo))),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(jsonContentType),
 	}
 
 	_, err = m.s3Client.PutObject(ctx, input)
@@ -373,7 +371,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 
 	// Initialize self-registration after acquiring lock
-	selfRegistered := !m.requireQuorum // if quorum not required, consider self registered
+	selfRegistered := !(m.quorumSize > 0) // if quorum not required, consider self registered
 
 	for {
 		select {
@@ -393,7 +391,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			}
 
 			// If we're the leader and need quorum but haven't registered, do it now
-			if leaderState.isLeader && m.requireQuorum && !selfRegistered {
+			if leaderState.isLeader && m.quorumSize > 0 && !selfRegistered {
 				if err := m.RegisterObserver(ctx, m.nodeID, nil); err != nil {
 					return fmt.Errorf("failed to register self as observer: %w", err)
 				}
@@ -641,7 +639,7 @@ func (m *Manager) GetActiveObservers(ctx context.Context) (int, error) {
 
 // Modified the Manager's verifyQuorum method for more aggressive checking.
 func (m *Manager) verifyQuorum(ctx context.Context) bool {
-	if !m.requireQuorum {
+	if !(m.quorumSize > 0) {
 		return true // Always return true if quorum checking is disabled
 	}
 
@@ -668,9 +666,9 @@ func (m *Manager) verifyQuorum(ctx context.Context) bool {
 		}
 	}
 
-	hasQuorum := activeCount >= m.requiredObservers
+	hasQuorum := activeCount >= m.quorumSize
 	log.Printf("DEBUG: Quorum check - Active: %d, Required: %d, Has Quorum: %v",
-		activeCount, m.requiredObservers, hasQuorum)
+		activeCount, m.quorumSize, hasQuorum)
 
 	return hasQuorum
 }

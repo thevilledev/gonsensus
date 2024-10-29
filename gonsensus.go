@@ -45,11 +45,10 @@ type S3Client interface {
 }
 
 type Config struct {
-	TTL           time.Duration
-	PollInterval  time.Duration
-	LockPrefix    string
-	NodeID        string
-	RequireQuorum bool
-	QuorumSize    int
-	GracePeriod   time.Duration
+	TTL          time.Duration
+	PollInterval time.Duration
+	LockPrefix   string
+	NodeID       string
+	QuorumSize   int
+	GracePeriod  time.Duration
 }
