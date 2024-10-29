@@ -15,3 +15,12 @@ func isAWSErrorCode(err error, code string) bool {
 
 	return false
 }
+
+// Helper function for error handling in marshal operations.
+func must(data []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+
+	return data
+}
