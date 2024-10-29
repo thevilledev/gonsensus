@@ -476,101 +476,149 @@ func (m *Manager) RegisterObserver(ctx context.Context, nodeID string, metadata 
 
 	// Retry registration a few times in case of conflicts
 	for range 3 {
-		// Get current lock info
-		lockInfo, err := m.GetLockInfo(ctx)
-		if err != nil && !errors.Is(err, ErrLockNotFound) {
-			return fmt.Errorf("failed to get lock info before registration: %w", err)
-		}
-
-		// If no lock exists yet, we can't register observers
-		if lockInfo == nil {
-			log.Printf("DEBUG: No lock exists when trying to register observer %s", nodeID)
-
-			return ErrNoActiveLock
-		}
-
-		log.Printf("DEBUG: Current lock before registration - Node: %s, Term: %d, Version: %s, Observer count: %d",
-			lockInfo.Node, lockInfo.Term, lockInfo.Version, len(lockInfo.Observers))
-
-		// Deep copy the lock info to prevent modification of the original
-		newLockInfo := &LockInfo{
-			Node:            lockInfo.Node,
-			Timestamp:       lockInfo.Timestamp,
-			Expiry:          lockInfo.Expiry,
-			Term:            lockInfo.Term,
-			Version:         lockInfo.Version,
-			FenceToken:      lockInfo.FenceToken,
-			LastKnownLeader: lockInfo.LastKnownLeader,
-		}
-
-		// Initialize or copy observers map
-		if lockInfo.Observers == nil {
-			newLockInfo.Observers = make(map[string]observerInfo)
-
-			log.Printf("DEBUG: Initializing new observers map for lock")
-		} else {
-			// Deep copy existing observers
-			newLockInfo.Observers = make(map[string]observerInfo, len(lockInfo.Observers))
-			for k, v := range lockInfo.Observers {
-				newLockInfo.Observers[k] = v
-			}
-		}
-
-		// Update observer info
-		newLockInfo.Observers[nodeID] = observerInfo{
-			LastHeartbeat: time.Now(),
-			Metadata:      metadata,
-			IsActive:      true,
-		}
-
-		log.Printf("DEBUG: New lock after adding observer - Node: %s, Term: %d, Version: %s, Observer count: %d",
-			newLockInfo.Node, newLockInfo.Term, newLockInfo.Version, len(newLockInfo.Observers))
-
-		// Marshal updated lock info
-		lockData, err := json.Marshal(newLockInfo)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrFailedToMarshalLockInfo, err)
-		}
-
-		// Update S3 with new observer info while preserving lock
-		input := &s3.PutObjectInput{
-			Bucket:      aws.String(m.bucket),
-			Key:         aws.String(m.lockKey),
-			Body:        bytes.NewReader(lockData),
-			ContentType: aws.String(jsonContentType),
-		}
-
-		_, err = m.s3Client.PutObject(ctx, input)
-		if err != nil {
-			var apiErr smithy.APIError
-			if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
-				log.Printf("DEBUG: Conflict during registration of observer %s, retrying", nodeID)
-
+		if err := m.attemptObserverRegistration(ctx, nodeID, metadata); err != nil {
+			if errors.Is(err, ErrRetryRegistration) {
 				continue
 			}
 
-			return fmt.Errorf("failed to update lock info: %w", err)
+			return err
 		}
-
-		// Verify the registration
-		verifyLock, err := m.GetLockInfo(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to verify registration: %w", err)
-		}
-
-		if verifyLock.Observers == nil || verifyLock.Observers[nodeID].LastHeartbeat.IsZero() {
-			log.Printf("DEBUG: Observer %s not found in lock after registration", nodeID)
-
-			continue
-		}
-
-		log.Printf("DEBUG: Successfully registered observer %s, total observers: %d",
-			nodeID, len(verifyLock.Observers))
 
 		return nil
 	}
 
 	return ErrFailedToRegisterObserver
+}
+
+func (m *Manager) attemptObserverRegistration(ctx context.Context, nodeID string, metadata map[string]string) error {
+	// Get and validate current lock
+	lockInfo, err := m.getLockForRegistration(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+
+	// Prepare new lock info with observer
+	newLockInfo := m.prepareObserverLockInfo(lockInfo, nodeID, metadata)
+
+	// Update lock in S3
+	if err := m.updateLockWithObserver(ctx, newLockInfo, nodeID); err != nil {
+		return err
+	}
+
+	// Verify registration
+	if err := m.verifyObserverRegistration(ctx, nodeID); err != nil {
+		return ErrRetryRegistration
+	}
+
+	return nil
+}
+
+func (m *Manager) getLockForRegistration(ctx context.Context, nodeID string) (*LockInfo, error) {
+	lockInfo, err := m.GetLockInfo(ctx)
+	if err != nil && !errors.Is(err, ErrLockNotFound) {
+		return nil, fmt.Errorf("failed to get lock info before registration: %w", err)
+	}
+
+	if lockInfo == nil {
+		log.Printf("DEBUG: No lock exists when trying to register observer %s", nodeID)
+
+		return nil, ErrNoActiveLock
+	}
+
+	log.Printf("DEBUG: Current lock before registration - Node: %s, Term: %d, Version: %s, Observer count: %d",
+		lockInfo.Node, lockInfo.Term, lockInfo.Version, len(lockInfo.Observers))
+
+	return lockInfo, nil
+}
+
+func (m *Manager) prepareObserverLockInfo(currentLock *LockInfo, nodeID string, metadata map[string]string) *LockInfo {
+	// Deep copy the lock info
+	newLockInfo := &LockInfo{
+		Node:            currentLock.Node,
+		Timestamp:       currentLock.Timestamp,
+		Expiry:          currentLock.Expiry,
+		Term:            currentLock.Term,
+		Version:         currentLock.Version,
+		FenceToken:      currentLock.FenceToken,
+		LastKnownLeader: currentLock.LastKnownLeader,
+	}
+
+	// Initialize or copy observers map
+	newLockInfo.Observers = m.initializeObserversMap(currentLock.Observers)
+
+	// Add new observer
+	newLockInfo.Observers[nodeID] = observerInfo{
+		LastHeartbeat: time.Now(),
+		Metadata:      metadata,
+		IsActive:      true,
+	}
+
+	log.Printf("DEBUG: New lock after adding observer - Node: %s, Term: %d, Version: %s, Observer count: %d",
+		newLockInfo.Node, newLockInfo.Term, newLockInfo.Version, len(newLockInfo.Observers))
+
+	return newLockInfo
+}
+
+func (m *Manager) initializeObserversMap(existing map[string]observerInfo) map[string]observerInfo {
+	if existing == nil {
+		log.Printf("DEBUG: Initializing new observers map for lock")
+
+		return make(map[string]observerInfo)
+	}
+
+	// Deep copy existing observers
+	newMap := make(map[string]observerInfo, len(existing))
+	for k, v := range existing {
+		newMap[k] = v
+	}
+
+	return newMap
+}
+
+func (m *Manager) updateLockWithObserver(ctx context.Context, lockInfo *LockInfo, nodeID string) error {
+	lockData, err := json.Marshal(lockInfo)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrFailedToMarshalLockInfo, err)
+	}
+
+	input := &s3.PutObjectInput{
+		Bucket:      aws.String(m.bucket),
+		Key:         aws.String(m.lockKey),
+		Body:        bytes.NewReader(lockData),
+		ContentType: aws.String(jsonContentType),
+	}
+
+	_, err = m.s3Client.PutObject(ctx, input)
+	if err != nil {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
+			log.Printf("DEBUG: Conflict during registration of observer %s, retrying", nodeID)
+
+			return ErrRetryRegistration
+		}
+
+		return fmt.Errorf("failed to update lock info: %w", err)
+	}
+
+	return nil
+}
+
+func (m *Manager) verifyObserverRegistration(ctx context.Context, nodeID string) error {
+	verifyLock, err := m.GetLockInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to verify registration: %w", err)
+	}
+
+	if verifyLock.Observers == nil || verifyLock.Observers[nodeID].LastHeartbeat.IsZero() {
+		log.Printf("DEBUG: Observer %s not found in lock after registration", nodeID)
+
+		return ErrRetryRegistration
+	}
+
+	log.Printf("DEBUG: Successfully registered observer %s, total observers: %d",
+		nodeID, len(verifyLock.Observers))
+
+	return nil
 }
 
 // UpdateHeartbeat updates the last heartbeat time for a node in S3.

@@ -21,6 +21,7 @@ var (
 	ErrFailedToRegisterObserver = errors.New("failed to register observer")
 	ErrFailedToMarshalLockInfo  = errors.New("failed to marshal lock info")
 	ErrFailedToGetLockInfo      = errors.New("failed to get lock info")
+	ErrRetryRegistration        = errors.New("retry registration attempt")
 )
 
 const (
