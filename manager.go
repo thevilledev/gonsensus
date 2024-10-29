@@ -393,7 +393,6 @@ func (m *Manager) Run(ctx context.Context) error {
 		isLeader: false,
 	}
 
-	// Initialize self-registration after acquiring lock
 	selfRegistered := m.quorumSize <= 1 // if quorum not required, consider self registered
 
 	for {
@@ -404,44 +403,70 @@ func (m *Manager) Run(ctx context.Context) error {
 			return ctx.Err()
 
 		default:
-			// Try to become leader first
-			if err := leaderState.runLeaderLoop(ctx); err != nil {
-				if !errors.Is(err, context.Canceled) {
-					log.Printf("Leader loop error: %v\n", err)
-				}
-
-				return err
-			}
-
-			// If we're the leader and need quorum but haven't registered, do it now
-			if leaderState.isLeader && !selfRegistered {
-				if err := m.RegisterObserver(ctx, m.nodeID, nil); err != nil {
-					return fmt.Errorf("failed to register self as observer: %w", err)
-				}
-
-				selfRegistered = true
-
-				// Start heartbeat goroutine
-				heartbeatTicker := time.NewTicker(m.ttl / defaultHeartbeatDivider)
-				defer heartbeatTicker.Stop()
-
-				go func() {
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						case <-heartbeatTicker.C:
-							if err := m.UpdateHeartbeat(ctx, m.nodeID); err != nil {
-								log.Printf("Failed to update heartbeat: %v", err)
-							}
-						}
-					}
-				}()
+			if err := m.runLeadershipCycle(ctx, leaderState, &selfRegistered); err != nil {
+				return m.handleLeadershipError(err)
 			}
 
 			time.Sleep(m.pollInterval)
 		}
 	}
+}
+
+func (m *Manager) runLeadershipCycle(ctx context.Context, leaderState *leaderState, selfRegistered *bool) error {
+	// Try to become leader first
+	if err := leaderState.runLeaderLoop(ctx); err != nil {
+		return err
+	}
+
+	// Handle self-registration if needed
+	if leaderState.isLeader && !*selfRegistered {
+		if err := m.handleSelfRegistration(ctx); err != nil {
+			return err
+		}
+
+		*selfRegistered = true
+	}
+
+	return nil
+}
+
+func (m *Manager) handleSelfRegistration(ctx context.Context) error {
+	if err := m.RegisterObserver(ctx, m.nodeID, nil); err != nil {
+		return fmt.Errorf("failed to register self as observer: %w", err)
+	}
+
+	m.startHeartbeatLoop(ctx)
+
+	return nil
+}
+
+func (m *Manager) startHeartbeatLoop(ctx context.Context) {
+	heartbeatTicker := time.NewTicker(m.ttl / defaultHeartbeatDivider)
+	go func() {
+		defer heartbeatTicker.Stop()
+		m.runHeartbeatLoop(ctx, heartbeatTicker.C)
+	}()
+}
+
+func (m *Manager) runHeartbeatLoop(ctx context.Context, ticker <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker:
+			if err := m.UpdateHeartbeat(ctx, m.nodeID); err != nil {
+				log.Printf("Failed to update heartbeat: %v", err)
+			}
+		}
+	}
+}
+
+func (m *Manager) handleLeadershipError(err error) error {
+	if !errors.Is(err, context.Canceled) {
+		log.Printf("Leader loop error: %v\n", err)
+	}
+
+	return err
 }
 
 // GetLockInfo retrieves current lock information.
