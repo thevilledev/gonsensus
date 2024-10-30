@@ -5,8 +5,13 @@ all: fmt lint test
 fmt:
 	go fmt $$(go list ./...)
 
-lint:
+lint: vet
 	golangci-lint run
+
+lit: lint
+
+vet:
+	go vet $$(go list ./...)
 
 test:
 	go test -v -race -run ^Test -parallel=8 ./...

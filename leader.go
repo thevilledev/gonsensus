@@ -45,13 +45,18 @@ func (s *leaderState) tryBecomeLeader(ctx context.Context) error {
 }
 
 func (s *leaderState) handleElection(ctx context.Context) error {
-	if s.manager.onElected == nil {
+	// Get callback reference under read lock
+	s.mu.RLock()
+	callback := s.manager.onElected
+	s.mu.RUnlock()
+
+	if callback == nil {
 		return nil
 	}
 
-	if err := s.manager.onElected(ctx); err != nil {
+	// Release lock during potentially long-running callback
+	if err := callback(ctx); err != nil {
 		log.Printf("Error in leader callback: %v\n", err)
-
 		s.setLeader(false)
 	}
 
@@ -59,14 +64,16 @@ func (s *leaderState) handleElection(ctx context.Context) error {
 }
 
 func (s *leaderState) handleDemotion(ctx context.Context) {
-	// Get current state before demotion
-	wasLeader := s.getIsLeader()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if wasLeader && s.manager.onDemoted != nil {
+	// Need atomic operation because we need to check state and potentially
+	// call callback within the same lock
+	if s.isLeader && s.manager.onDemoted != nil {
 		s.manager.onDemoted(ctx)
 	}
 
-	s.setLeader(false)
+	s.isLeader = false
 }
 
 func (s *leaderState) runLeaderMaintenance(ctx context.Context) error {
