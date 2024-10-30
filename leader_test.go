@@ -264,6 +264,7 @@ func testConcurrentMaintenanceAndDemotion(t *testing.T, state *leaderState) {
 	// Start maintenance loop
 	go func() {
 		defer wGroup.Done()
+
 		state.setLeader(true)
 		_ = state.runLeaderMaintenance(ctx)
 	}()
