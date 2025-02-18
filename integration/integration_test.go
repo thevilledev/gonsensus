@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/thevilledev/gonsensus"
@@ -30,7 +31,10 @@ func TestThreeNodeQuorum_Integration(t *testing.T) {
 	}
 
 	// Create S3 client
-	s3Client := s3.NewFromConfig(cfg)
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		// https://github.com/aws/aws-sdk-go-v2/discussions/2960
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	})
 
 	// Create unique test ID to prevent interference between test runs
 	testID := fmt.Sprintf("%d", time.Now().UnixNano())

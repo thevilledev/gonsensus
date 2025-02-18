@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/thevilledev/gonsensus"
@@ -22,7 +23,10 @@ func Example() {
 	}
 
 	// Create S3 client
-	s3Client := s3.NewFromConfig(cfg)
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		// https://github.com/aws/aws-sdk-go-v2/discussions/2960
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	})
 
 	// Create consensus manager config
 	consensusConfig := gonsensus.Config{
